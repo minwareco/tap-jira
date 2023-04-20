@@ -11,8 +11,14 @@ class Context():
 
     @classmethod
     def get_projects(cls):
-        projectsRaw = cls.config.get("projects", "")
-        return list(map(lambda p: p.strip(), projectsRaw.split(",")))
+        projectsRaw = cls.config.get("projects", None)
+        if projectsRaw:
+            # convert comma-separated list into array
+            projectsList = list(map(lambda p: p.strip(), projectsRaw.split(",")))
+            # filter out empty strings
+            projectsList = list(filter(lambda p: len(p) > 0, projectsList))
+            return projectsList
+        return []
 
     @classmethod
     def get_catalog_entry(cls, stream_name):
