@@ -13,14 +13,11 @@ class Context():
     def get_projects(cls):
         projectsRaw = cls.config.get("projects", None)
         if projectsRaw:
-            # force back to a list
-            return list(
-                # filter out empty strings
-                filter(lambda p: len(p) > 0,
-                    # convert comma-separated list into array
-                    map(lambda p: p.strip(), projectsRaw.split(","))
-                )
-            )
+            # convert comma-separated list into array
+            projectsList = list(map(lambda p: p.strip(), projectsRaw.split(",")))
+            # filter out empty strings
+            projectsList = list(filter(lambda p: len(p) > 0, projectsList))
+            return projectsList
         return []
 
     @classmethod
