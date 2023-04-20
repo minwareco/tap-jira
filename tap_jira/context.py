@@ -10,6 +10,11 @@ class Context():
     stream_map = {}
 
     @classmethod
+    def get_projects(cls):
+        projectsRaw = cls.config.get("projects", "")
+        return list(map(lambda p: p.strip(), projectsRaw.split(",")))
+
+    @classmethod
     def get_catalog_entry(cls, stream_name):
         if not cls.stream_map:
             cls.stream_map = {s.tap_stream_id: s for s in cls.catalog.streams}

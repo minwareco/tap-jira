@@ -120,6 +120,12 @@ class Projects(Stream):
         projects = Context.client.request(
             self.tap_stream_id, "GET", "/rest/api/2/project",
             params={"expand": "description,lead,url,projectKeys"})
+
+        # apply projects filter if applicable
+        projectsFilter = Context.get_projects()
+        if len(projectsFilter) > 0:
+            projects = list(filter(lambda p: p["key"] in projectsFilter, projects))
+
         for project in projects:
             # The Jira documentation suggests that a "versions" key may appear
             # in the project, but from my testing that hasn't been the case
@@ -219,8 +225,15 @@ class Issues(Stream):
         stream = Context.get_catalog_entry(self.tap_stream_id)
         knownFields = stream.schema.properties['fields'].properties
 
+        # build projects filter from config, if any
+        projectsList = Context.get_projects()
+        projectsJql = ""
+        if len(projectsList) > 0:
+            projectsList = list(map(lambda p: "'{}'".format(p), projectsList))
+            projectsJql = "project IN ({}) and ".format(",".join(projectsList))
+
         # Now fetch all the actual issues, translating custom fields
-        jql = "updated >= '{}' order by updated asc".format(start_date)
+        jql = "{} updated >= '{}' order by updated asc".format(projectsJql, start_date).strip()
         params = {"fields": "*all",
                   "expand": "changelog,transitions",
                   "validateQuery": "strict",
