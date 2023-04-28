@@ -147,6 +147,30 @@ class Projects(Stream):
                 for page in pager.pages(COMPONENTS.tap_stream_id, "GET", path):
                     COMPONENTS.write_page(page)
 
+class ProjectsNormalized(Stream):
+    def sync(self):
+        projects = Context.client.request(
+            self.tap_stream_id, "GET", "/rest/api/2/project",
+            params={"expand": "description"})
+
+        # apply projects filter if applicable
+        projectsFilter = Context.get_projects()
+        if len(projectsFilter) > 0:
+            projects = list(filter(lambda p: p["key"] in projectsFilter, projects))
+
+        # produce normalized project objects
+        normalizedProjects = []
+        for project in projects:
+            normalizedProjects.append({
+                "id": project["id"],
+                "name": "{} ({})".format(project["name"], project["key"]), # e.g. "minware (MW)"
+                "description": project["description"],
+                # we have to build the URL because it doesnt come back from the API
+                "url": "{}/browse/{}".format(Context.config["base_url"].rstrip("/"), project["key"])
+            })
+
+        self.write_page(normalizedProjects)
+
 
 class ProjectTypes(Stream):
     def sync(self):
@@ -349,10 +373,12 @@ ISSUE_COMMENTS = Stream("issue_comments", ["id"], indirect_stream=True)
 ISSUE_TRANSITIONS = Stream("issue_transitions", ["id"],
                            indirect_stream=True)
 PROJECTS = Projects("projects", ["id"])
+PROJECTS_NORMALIZED = ProjectsNormalized("projects_normalized", ["id"])
 CHANGELOGS = Stream("changelogs", ["id"], indirect_stream=True)
 
 ALL_STREAMS = [
     PROJECTS,
+    PROJECTS_NORMALIZED,
     VERSIONS,
     COMPONENTS,
     ProjectTypes("project_types", ["key"]),
