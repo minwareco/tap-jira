@@ -25,7 +25,6 @@ class Context():
     def get_catalog_entry(cls, stream_name):
         if not cls.stream_map:
             cls.stream_map = {s.tap_stream_id: s for s in cls.catalog.streams}
-            singer.get_logger().info('{}'.format(cls.stream_map))
         return cls.stream_map.get(stream_name)
 
     @classmethod
