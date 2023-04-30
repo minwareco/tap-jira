@@ -74,6 +74,7 @@ class TapSpec():
 
         return {
             "projects": id_pk, # Tap uses deprecated all projects endpoint, not paginated one, see https://developer.atlassian.com/cloud/jira/platform/rest/v2/api-group-projects/#api-group-projects
+            "projects_normalized": id_pk,
             "project_types": key_pk, # Not paginated, see https://developer.atlassian.com/cloud/jira/platform/rest/v2/api-group-project-types/#api-rest-api-2-project-type-get
             "project_categories": id_pk, # Not paginated, see https://developer.atlassian.com/cloud/jira/platform/rest/v2/api-group-project-categories/
             "versions": {
