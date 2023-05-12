@@ -105,4 +105,8 @@ class TapSpec():
                 self.API_LIMIT: 0, # TODO: Backlog ticket to create data required to test this documentation says 1000, see https://developer.atlassian.com/cloud/jira/platform/rest/v2/api-group-issue-worklogs/#api-rest-api-2-worklog-updated-get
                 # https://stitchdata.atlassian.net/browse/SRCE-5193
             },
+            "worklogs_deleted": {
+                self.PRIMARY_KEYS: {"worklogId"},
+                self.API_LIMIT: 0,
+            }
         }

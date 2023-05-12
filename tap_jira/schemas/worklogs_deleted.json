@@ -1,0 +1,42 @@
+{
+  "title": "Worklog Deleted",
+  "type": [
+    "null",
+    "object"
+  ],
+  "properties": {
+    "worklogId": {
+      "type": [
+        "null",
+        "string"
+      ]
+    },
+    "updatedTime": {
+      "type": [
+        "null",
+        "integer"
+      ]
+    },
+    "properties": {
+      "type": [
+        "null",
+        "array"
+      ],
+      "items": {
+        "type": [
+          "null",
+          "object"
+        ],
+        "properties": {
+          "key": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "value": {}
+        }
+      }
+    }
+  }
+}
