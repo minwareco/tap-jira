@@ -368,16 +368,6 @@ class Worklogs(Stream):
 
 
 class WorklogsDeleted(Stream):
-    def _fetch_records(self, last_updated):
-        # since_ts uses millisecond precision
-        since_ts = int(last_updated.timestamp()) * 1000
-        return Context.client.request(
-            self.tap_stream_id,
-            "GET",
-            "/rest/api/2/worklog/deleted",
-            params={"since": since_ts},
-        )
-
     def sync(self):
         updated_bookmark = [self.tap_stream_id, "updated"]
         last_updated = Context.update_start_date_bookmark(updated_bookmark)
