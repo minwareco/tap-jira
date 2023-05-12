@@ -2,6 +2,7 @@ import json
 import pytz
 import requests
 import singer
+import datetime
 
 from singer import metrics, utils, metadata, Transformer
 from .http import Paginator
@@ -366,6 +367,48 @@ class Worklogs(Stream):
                 break
 
 
+class WorklogsDeleted(Stream):
+    def _fetch_records(self, last_updated):
+        # since_ts uses millisecond precision
+        since_ts = int(last_updated.timestamp()) * 1000
+        return Context.client.request(
+            self.tap_stream_id,
+            "GET",
+            "/rest/api/2/worklog/deleted",
+            params={"since": since_ts},
+        )
+
+    def sync(self):
+        updated_bookmark = [self.tap_stream_id, "updated"]
+        last_updated = Context.update_start_date_bookmark(updated_bookmark)
+        since_ts = int(last_updated.timestamp()) * 1000
+        while since_ts is not None:
+            records_page = Context.client.request(
+                self.tap_stream_id,
+                "GET",
+                "/rest/api/2/worklog/deleted",
+                params={"since": since_ts},
+            )
+
+            if not records_page.get("values"):
+                break
+
+            self.write_page(records_page.get("values"))
+
+            # store bookmark in ISO-8601 format, which requires conversion from the Unix timestamp
+            # that the worklog records have
+            max_updated_time = (records_page.get("until") / 1000)
+            last_updated = datetime.datetime.utcfromtimestamp(max_updated_time).isoformat() + "Z"
+            Context.set_bookmark(updated_bookmark, last_updated)
+            singer.write_state(Context.state)
+            # lastPage is a boolean value based on
+            # https://developer.atlassian.com/cloud/jira/platform/rest/v3/?utm_source=%2Fcloud%2Fjira%2Fplatform%2Frest%2F&utm_medium=302#api-api-3-worklog-updated-get
+            last_page = records_page.get("lastPage")
+            if last_page:
+                break
+
+            since_ts = records_page.get("until")
+
 VERSIONS = Stream("versions", ["id"], indirect_stream=True)
 COMPONENTS = Stream("components", ["id"], indirect_stream=True)
 ISSUES = Issues("issues", ["id"])
@@ -393,6 +436,7 @@ ALL_STREAMS = [
     CHANGELOGS,
     ISSUE_TRANSITIONS,
     Worklogs("worklogs", ["id"]),
+    WorklogsDeleted("worklogs_deleted", ["worklogId"]),
 ]
 
 ALL_STREAM_IDS = [s.tap_stream_id for s in ALL_STREAMS]
