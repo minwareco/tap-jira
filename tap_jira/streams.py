@@ -241,11 +241,18 @@ class Issues(Stream):
         for field in Context.client.request('issue_fields', "GET", "/rest/api/2/field"):
             fields.append(field)
 
+        # When generating fieldNames, we need to get all the system fields first
+        # In the event that customfields_* has an identical name to a system field,
+        # we need to make sure we do not overwrite the system field with the customfields value
         sortedFields = sorted(fields, key=lambda f: f['custom'], reverse=False)
         for field in sortedFields:
             id = field['id']
             name = field['name']
 
+            # JIRA does allow custommfields to have names that conflict
+            # with each other as well as system fields.
+            # If we run into this problem, we append the customfields
+            # numeric id to the name to avoid collisions
             if name in fieldNames.values():
                 name += '_' + field['id'].replace('customfield_', '')
 
