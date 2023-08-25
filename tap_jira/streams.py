@@ -232,23 +232,24 @@ class Issues(Stream):
         timezone = Context.retrieve_timezone()
         start_date = last_updated.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
 
-        # First, fetch all the custom field names for translation
-        page_num = 0
-        fieldPager = Paginator(Context.client, page_num=page_num, items_key=None)
-        params = {
-            "maxResults": 100,
-        }
-        fieldNames = {}
-        for page in fieldPager.pages('issue_fields', "GET", "/rest/api/2/field", params=params):
-            for field in page:
-                id = field['id']
-                name = field['name']
-                fieldNames[id] = name
-            # HACK - there should only be one page, not sure why pager doesn't support this
-            break
-
         stream = Context.get_catalog_entry(self.tap_stream_id)
         knownFields = stream.schema.properties['fields'].properties
+
+        # First, fetch all the custom field names for translation
+        fieldNames = {}
+        fields = []
+        for field in Context.client.request('issue_fields', "GET", "/rest/api/2/field"):
+            fields.append(field)
+
+        sortedFields = sorted(fields, key=lambda f: f['custom'], reverse=False)
+        for field in sortedFields:
+            id = field['id']
+            name = field['name']
+
+            if name in fieldNames.values():
+                name += '_' + field['id'].replace('customfield_', '')
+
+            fieldNames[id] = name
 
         # build projects filter from config, if any
         projectsList = Context.get_projects()
@@ -284,21 +285,15 @@ class Issues(Stream):
                 issue['fields'].pop('operations', None)
 
                 # Rename all of the custom fields
-                issueKeys = []
-                for k in issue['fields'].keys():
-                    issueKeys.append(k)
-                for k in issueKeys:
+                for k in list(issue['fields'].keys()):
                     if k[:len('customfield_')] == 'customfield_':
                         val = issue['fields'][k]
                         del issue['fields'][k]
                         issue['fields'][fieldNames[k]] = val
 
                 # Now, go through and separate fields we don't recognize into "_custom"
-                issueKeys = []
                 customFields = {}
-                for k in issue['fields'].keys():
-                    issueKeys.append(k)
-                for k in issueKeys:
+                for k in list(issue['fields'].keys()):
                     # If we don't know about this field, then put it in a "_custom" object for
                     # outputting as a single JSON
                     if not k in knownFields:
