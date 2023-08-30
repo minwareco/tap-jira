@@ -125,7 +125,7 @@ class Projects(Stream):
         # apply projects filter if applicable
         projectsFilter = Context.get_projects()
         if len(projectsFilter) > 0:
-            projects = list(filter(lambda p: p["key"] in projectsFilter, projects))
+            projects = list(filter(lambda p: p["key"] in projectsFilter or p["id"] in projectsFilter, projects))
 
         for project in projects:
             # The Jira documentation suggests that a "versions" key may appear
