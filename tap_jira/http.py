@@ -142,6 +142,8 @@ class Client():
             timer.tags[metrics.Tag.http_status_code] = response.status_code
         if response.status_code == 429:
             raise RateLimitException()
+        elif response.status_code >= 400:
+            LOGGER.warn('Response text: {}'.format(response.status_code, response.text))
         response.raise_for_status()
         return response.json()
 
