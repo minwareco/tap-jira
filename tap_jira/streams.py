@@ -7,6 +7,7 @@ import datetime
 from singer import metrics, utils, metadata, Transformer
 from .http import Paginator
 from .context import Context
+from itertools import chain
 
 
 def raise_if_bookmark_cannot_advance(worklogs):
@@ -125,6 +126,18 @@ class Projects(Stream):
         # apply projects filter if applicable
         projectsFilter = Context.get_projects()
         if len(projectsFilter) > 0:
+            # remove all project ids and keys when:
+            # 1. the project doesn't exist in list of projects
+            # 2. the project is archived and therefore unqueryable
+            allPossibleProjectFilterValues = list(chain.from_iterable(
+                (p["id"], p["key"]) for p in projects if 'archived' not in p or p['archived'] == False
+            ))
+            projectsFilter = [pf for pf in projectsFilter if pf in allPossibleProjectFilterValues]
+            newProjectsConfig = ','.join(projectsFilter)
+            if newProjectsConfig != Context.config["projects"]:
+                LOGGER.warn('projects config contains unavailable projects: \n\t{}\n\tUPDATED TO\n\t{}'.format(Context.config["projects"], newProjectsConfig))
+                # other streams will not check for project availability explicitly, so update the config here
+                Context.config["projects"] = newProjectsConfig
             projects = list(filter(lambda p: p["key"] in projectsFilter or p["id"] in projectsFilter, projects))
 
         for project in projects:
