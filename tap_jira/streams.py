@@ -266,7 +266,7 @@ class Issues(Stream):
             # with each other as well as system fields.
             # If we run into this problem, we append the customfields
             # numeric id to the name to avoid collisions
-            if name in fieldNames.values():
+            if name in fieldNames.values() or name in knownFields.keys():
                 name += '_' + field['id'].replace('customfield_', '')
 
             fieldNames[id] = name
