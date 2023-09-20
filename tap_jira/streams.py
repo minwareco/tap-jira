@@ -4,7 +4,7 @@ import requests
 import singer
 import datetime
 
-from singer import metrics, utils, metadata, Transformer
+from singer import metrics, utils, metadata, Transformer, Timer
 from .http import Paginator
 from .context import Context
 from itertools import chain
@@ -236,15 +236,11 @@ class Users(Stream):
 
 
 class Issues(Stream):
+    # All projects bookmark key must not conflict with potential
+    # jira project keys and jira project ids.
+    ALL_PROJECTS_BOOKMARK_KEY = '0_ALL_PROJECTS'
 
     def sync(self):
-        updated_bookmark = [self.tap_stream_id, "updated"]
-        page_num_offset = [self.tap_stream_id, "offset", "page_num"]
-
-        last_updated = Context.update_start_date_bookmark(updated_bookmark)
-        timezone = Context.retrieve_timezone()
-        start_date = last_updated.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
-
         stream = Context.get_catalog_entry(self.tap_stream_id)
         knownFields = stream.schema.properties['fields'].properties
 
@@ -271,12 +267,31 @@ class Issues(Stream):
 
             fieldNames[id] = name
 
+        projectsToSync = Context.get_projects()
+        if len(projectsToSync) == 0:
+            with Timer('issues_sync', { 'project': self.ALL_PROJECTS_BOOKMARK_KEY }):
+                self.sync_project(fieldNames, knownFields)
+        else:
+            for project_key_or_id in projectsToSync:
+                with Timer('issues_sync', { 'project': project_key_or_id }):
+                    self.sync_project(fieldNames, knownFields, project_key_or_id)
+
+    def sync_project(self, fieldNames, knownFields, project_key_or_id = None):
+        if project_key_or_id is None:
+            project_key_or_id = self.ALL_PROJECTS_BOOKMARK_KEY
+
+        LOGGER.info('syncing issues for project {}'.format(project_key_or_id))
+
         # build projects filter from config, if any
-        projectsList = Context.get_projects()
-        projectsJql = ""
-        if len(projectsList) > 0:
-            projectsList = list(map(lambda p: "'{}'".format(p), projectsList))
-            projectsJql = "project IN ({}) and ".format(",".join(projectsList))
+        projectsJql = "" if project_key_or_id == self.ALL_PROJECTS_BOOKMARK_KEY \
+            else "project IN ({}) and ".format(project_key_or_id)
+
+        updated_bookmark = [self.tap_stream_id, project_key_or_id, "updated"]
+        page_num_offset = [self.tap_stream_id, project_key_or_id, "offset", "page_num"]
+
+        last_updated = Context.update_start_date_bookmark(updated_bookmark)
+        timezone = Context.retrieve_timezone()
+        start_date = last_updated.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
 
         # Now fetch all the actual issues, translating custom fields
         jql = "{} updated >= '{}' order by updated asc".format(projectsJql, start_date).strip()
