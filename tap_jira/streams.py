@@ -294,7 +294,7 @@ class Issues(Stream):
         if not project_page_num_offset and not project_updated_bookmark:
             non_project_updated_bookmark_key = [self.tap_stream_id, "updated"]
             non_project_updated_bookmark = Context.bookmark(non_project_updated_bookmark_key)
-            LOGGER.info('Previous state found {}: {}, {}'.format('.'.join(non_project_updated_bookmark_key), non_project_updated_bookmark, Context.bookmarks()))
+            LOGGER.info('Previous state found {}: {}'.format('.'.join(non_project_updated_bookmark_key), non_project_updated_bookmark))
             if non_project_updated_bookmark:
                 LOGGER.info('Updated being copied from previous state format')
                 Context.set_bookmark(updated_bookmark, non_project_updated_bookmark)
