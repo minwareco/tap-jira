@@ -54,7 +54,11 @@ class Context():
     def set_bookmark(cls, path, val):
         if isinstance(val, datetime):
             val = utils.strftime(val)
-        cls.bookmark(path[:-1])[path[-1]] = val
+
+        if val is None:
+            cls.bookmark(path[:-1]).pop(path[-1], None)
+        else:
+            cls.bookmark(path[:-1])[path[-1]] = val
 
     @classmethod
     def update_start_date_bookmark(cls, path):

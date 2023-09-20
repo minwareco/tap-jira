@@ -275,6 +275,30 @@ class Issues(Stream):
             for project_key_or_id in projectsToSync:
                 with Timer('issues_sync', { 'project': project_key_or_id }):
                     self.sync_project(fieldNames, knownFields, project_key_or_id)
+        
+        self.delete_old_state()
+
+    def delete_old_state(self):
+        Context.set_bookmark([self.tap_stream_id, "updated"], None)
+        Context.set_bookmark([self.tap_stream_id, "offset"], None)
+
+    def check_and_migrate_state(self, updated_bookmark, page_num_offset):
+        project_updated_bookmark = Context.bookmark(updated_bookmark)
+        project_page_num_offset = Context.bookmark(page_num_offset)
+
+        LOGGER.info('Checking state {}: {} and {}: {}'.format(
+            '.'.join(updated_bookmark), project_updated_bookmark,
+            '.'.join(project_page_num_offset), project_page_num_offset
+        ))
+
+        if not project_page_num_offset and not project_updated_bookmark:
+            non_project_updated_bookmark_key = [self.tap_stream_id, "updated"]
+            non_project_updated_bookmark = Context.bookmark(non_project_updated_bookmark_key)
+            LOGGER.info('Previous state found {}: {}, {}'.format('.'.join(non_project_updated_bookmark_key), non_project_updated_bookmark, Context.bookmarks()))
+            if non_project_updated_bookmark:
+                LOGGER.info('Updated being copied from previous state format')
+                Context.set_bookmark(updated_bookmark, non_project_updated_bookmark)
+                Context.set_bookmark(page_num_offset, 0)
 
     def sync_project(self, fieldNames, knownFields, project_key_or_id = None):
         if project_key_or_id is None:
@@ -289,9 +313,13 @@ class Issues(Stream):
         updated_bookmark = [self.tap_stream_id, project_key_or_id, "updated"]
         page_num_offset = [self.tap_stream_id, project_key_or_id, "offset", "page_num"]
 
+        self.check_and_migrate_state(updated_bookmark, page_num_offset)
+
         last_updated = Context.update_start_date_bookmark(updated_bookmark)
         timezone = Context.retrieve_timezone()
         start_date = last_updated.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
+
+        LOGGER.info('using updated >= \'{}\''.format(start_date))
 
         # Now fetch all the actual issues, translating custom fields
         jql = "{} updated >= '{}' order by updated asc".format(projectsJql, start_date).strip()
