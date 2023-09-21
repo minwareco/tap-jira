@@ -1,3 +1,5 @@
+import contextvars
+import functools
 import json
 import pytz
 import requests
@@ -8,6 +10,7 @@ from singer import metrics, utils, metadata, Transformer, Timer
 from .http import Paginator
 from .context import Context
 from itertools import chain
+from concurrent.futures import ThreadPoolExecutor
 
 
 def raise_if_bookmark_cannot_advance(worklogs):
@@ -272,9 +275,11 @@ class Issues(Stream):
             with Timer('issues_sync', { 'project': self.ALL_PROJECTS_BOOKMARK_KEY }):
                 self.sync_project(fieldNames, knownFields)
         else:
-            for project_key_or_id in projectsToSync:
-                with Timer('issues_sync', { 'project': project_key_or_id }):
-                    self.sync_project(fieldNames, knownFields, project_key_or_id)
+            with ThreadPoolExecutor(max_workers=6) as executor:
+                for project_key_or_id in projectsToSync:
+                    ctx = contextvars.copy_context()
+                    func_call = functools.partial(ctx.run, self.sync_project, fieldNames, knownFields, project_key_or_id)
+                    executor.submit(func_call)
         
         self.delete_old_state()
 
