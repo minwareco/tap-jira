@@ -1,4 +1,7 @@
+import contextvars
+import functools
 import json
+import threading
 import pytz
 import requests
 import singer
@@ -8,6 +11,7 @@ from singer import metrics, utils, metadata, Transformer, Timer
 from .http import Paginator
 from .context import Context
 from itertools import chain
+from concurrent.futures import ThreadPoolExecutor
 
 
 def raise_if_bookmark_cannot_advance(worklogs):
@@ -240,6 +244,10 @@ class Issues(Stream):
     # jira project keys and jira project ids.
     ALL_PROJECTS_BOOKMARK_KEY = '0_ALL_PROJECTS'
 
+    def __init__(self, tap_stream_id, pk_fields, indirect_stream=False, path=None):
+        super().__init__(tap_stream_id, pk_fields, indirect_stream, path)
+        self.write_lock = threading.Lock()
+
     def sync(self):
         stream = Context.get_catalog_entry(self.tap_stream_id)
         knownFields = stream.schema.properties['fields'].properties
@@ -272,9 +280,11 @@ class Issues(Stream):
             with Timer('issues_sync', { 'project': self.ALL_PROJECTS_BOOKMARK_KEY }):
                 self.sync_project(fieldNames, knownFields)
         else:
-            for project_key_or_id in projectsToSync:
-                with Timer('issues_sync', { 'project': project_key_or_id }):
-                    self.sync_project(fieldNames, knownFields, project_key_or_id)
+            with ThreadPoolExecutor(max_workers=6) as executor:
+                for project_key_or_id in projectsToSync:
+                    ctx = contextvars.copy_context()
+                    func_call = functools.partial(ctx.run, self.sync_project, fieldNames, knownFields, project_key_or_id)
+                    executor.submit(func_call)
         
         self.delete_old_state()
 
@@ -370,14 +380,15 @@ class Issues(Stream):
 
             # Grab last_updated before transform in write_page
             last_updated = utils.strptime_to_utc(page[-1]["fields"]["updated"])
+            with self.write_lock:
+                self.write_page(page)
 
-            self.write_page(page)
-
-            Context.set_bookmark(page_num_offset, pager.next_page_num)
+                Context.set_bookmark(page_num_offset, pager.next_page_num)
+                singer.write_state(Context.state)
+        with self.write_lock:
+            Context.set_bookmark(page_num_offset, None)
+            Context.set_bookmark(updated_bookmark, last_updated)
             singer.write_state(Context.state)
-        Context.set_bookmark(page_num_offset, None)
-        Context.set_bookmark(updated_bookmark, last_updated)
-        singer.write_state(Context.state)
 
 
 class Worklogs(Stream):
