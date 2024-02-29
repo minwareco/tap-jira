@@ -126,7 +126,6 @@ class Projects(Stream):
         projects = Context.client.request(
             self.tap_stream_id, "GET", "/rest/api/2/project",
             params={"expand": "description,lead,url,projectKeys"})
-
         # apply projects filter if applicable
         projectsFilter = Context.get_projects()
         if len(projectsFilter) > 0:
@@ -157,6 +156,14 @@ class Projects(Stream):
                 path = "/rest/api/2/project/{}/version".format(project["id"])
                 pager = Paginator(Context.client, order_by="sequence")
                 for page in pager.pages(VERSIONS.tap_stream_id, "GET", path):
+                    # `userReleaseDate` and `userStartDate` is a localized string
+                    # the schema has its data type as date-time.
+                    #
+                    # To avoid problems with non-english user settings
+                    # we override this with the actual date-time
+                    for version in page:
+                        version['userReleaseDate'] = version.get('releaseDate')
+                        version['userStartDate'] = version.get('startDate')
                     VERSIONS.write_page(page)
         if Context.is_selected(COMPONENTS.tap_stream_id):
             for project in projects:
