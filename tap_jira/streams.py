@@ -57,18 +57,51 @@ def raise_if_bookmark_cannot_advance(worklogs):
                         .format(worklog_updatedes[0]))
 
 
-def sync_sub_streams(page):
+def sync_sub_streams(page, issue_changelog_updated):
     for issue in page:
         comments = issue["fields"].pop("comment")["comments"]
         if comments and Context.is_selected(ISSUE_COMMENTS.tap_stream_id):
             for comment in comments:
                 comment["issueId"] = issue["id"]
             ISSUE_COMMENTS.write_page(comments)
-        changelogs = issue.pop("changelog")["histories"]
-        if changelogs and Context.is_selected(CHANGELOGS.tap_stream_id):
-            for changelog in changelogs:
-                changelog["issueId"] = issue["id"]
-            CHANGELOGS.write_page(changelogs)
+
+        if Context.is_selected(CHANGELOGS.tap_stream_id):
+            changelog_response = issue.pop("changelog")
+            changelogs = changelog_response["histories"]
+            if any(
+                utils.strptime_to_utc(changelog["created"]) >= issue_changelog_updated \
+                    for changelog in changelogs
+            ):
+                changelogs_to_write = []
+
+                # when expanding changelogs for an issue, jira returns 100
+                if changelog_response['maxResults'] >= changelog_response['total']:
+                    for changelog in changelogs:
+                        if utils.strptime_to_utc(changelog["created"]) > issue_changelog_updated:
+                            break
+
+                        changelogs_to_write.append(changelog)
+                else:
+                    pager = Paginator(Context.client, order_by="sequence")
+                    fetch_more_changelogs = True
+                    for page in pager.pages(
+                        CHANGELOGS.tap_stream_id,
+                        "GET",
+                        "/rest/api/2/issue/{}/changelog".format(issue["id"])
+                    ):
+                        for changelog in changelogs:
+                            if utils.strptime_to_utc(changelog["created"]) < issue_changelog_updated:
+                                fetch_more_changelogs = False
+
+                            changelogs_to_write.append(changelog)
+
+                        if not fetch_more_changelogs:
+                            break
+
+                CHANGELOGS.write_page(
+                    [{ **changelog, 'issueId': issue["id"] } for changelog in changelogs_to_write]
+                )
+
         transitions = issue.pop("transitions")
         if transitions and Context.is_selected(ISSUE_TRANSITIONS.tap_stream_id):
             for transition in transitions:
@@ -288,10 +321,18 @@ class Issues(Stream):
                 self.sync_project(fieldNames, knownFields)
         else:
             with ThreadPoolExecutor(max_workers=6) as executor:
+                func_call_futures = []
                 for project_key_or_id in projectsToSync:
                     ctx = contextvars.copy_context()
                     func_call = functools.partial(ctx.run, self.sync_project, fieldNames, knownFields, project_key_or_id)
-                    executor.submit(func_call)
+                    func_call_futures.append(executor.submit(func_call))
+
+                ## bubble up any exceptions discovered while syncing a project
+                try:
+                    for func_call_future in func_call_futures:
+                        func_call_future.result()
+                except Exception as ex:
+                    LOGGER.exception(ex)
         
         self.delete_old_state()
 
@@ -336,6 +377,13 @@ class Issues(Stream):
         timezone = Context.retrieve_timezone()
         start_date = last_updated.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
 
+        issue_changelogs_updated_bookmark_path = [CHANGELOGS.tap_stream_id, project_key_or_id, "updated"]
+        issue_changelogs_updated = Context.update_start_date_bookmark(issue_changelogs_updated_bookmark_path)
+        # grab the time now, before we sync any changelogs
+        # this will be used later to bookmark our progress
+        # there will be some overlap during the sync, but this allows us to avoid saving state per issue
+        issue_changelogs_sync_time = utils.now()
+
         LOGGER.info('using updated >= \'{}\''.format(start_date))
 
         # Now fetch all the actual issues, translating custom fields
@@ -351,7 +399,7 @@ class Issues(Stream):
                                 "GET", "/rest/api/2/search",
                                 params=params):
             # sync comments and changelogs for each issue
-            sync_sub_streams(page)
+            sync_sub_streams(page, issue_changelogs_updated)
             for issue in page:
                 issue['fields'].pop('worklog', None)
                 # The JSON schema for the search endpoint indicates an "operations"
@@ -395,6 +443,7 @@ class Issues(Stream):
         with self.write_lock:
             Context.set_bookmark(page_num_offset, None)
             Context.set_bookmark(updated_bookmark, last_updated)
+            Context.set_bookmark(issue_changelogs_updated_bookmark_path, issue_changelogs_sync_time)
             singer.write_state(Context.state)
 
 
