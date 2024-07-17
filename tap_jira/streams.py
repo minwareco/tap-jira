@@ -89,7 +89,7 @@ def sync_sub_streams(page, issue_changelog_updated):
                         "GET",
                         "/rest/api/2/issue/{}/changelog".format(issue["id"])
                     ):
-                        for changelog in changelogs:
+                        for changelog in page:
                             if utils.strptime_to_utc(changelog["created"]) < issue_changelog_updated:
                                 fetch_more_changelogs = False
 
