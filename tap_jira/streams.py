@@ -77,9 +77,6 @@ def sync_sub_streams(page, issue_changelog_updated):
                 # when expanding changelogs for an issue, jira returns 100
                 if changelog_response['maxResults'] >= changelog_response['total']:
                     for changelog in changelogs:
-                        if utils.strptime_to_utc(changelog["created"]) > issue_changelog_updated:
-                            break
-
                         changelogs_to_write.append(changelog)
                 else:
                     pager = Paginator(Context.client, order_by="sequence")
@@ -376,6 +373,9 @@ class Issues(Stream):
         last_updated = Context.update_start_date_bookmark(updated_bookmark)
         timezone = Context.retrieve_timezone()
         start_date = last_updated.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
+        if datetime.datetime(2024, 5, 17, 0, 0, tzinfo=pytz.utc) < last_updated < datetime.datetime(2024, 7, 23, 5, 0, 0, tzinfo=pytz.utc):
+            LOGGER.info('state is in broken timeframe, going back in time to ensure all issues are ingested')
+            start_date = datetime.datetime(2024, 5, 17, 0, 0, tzinfo=pytz.utc).strftime("%Y-%m-%d %H:%M")
 
         issue_changelogs_updated_bookmark_path = [CHANGELOGS.tap_stream_id, project_key_or_id, "updated"]
         issue_changelogs_updated = Context.update_start_date_bookmark(issue_changelogs_updated_bookmark_path)
