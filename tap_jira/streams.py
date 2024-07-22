@@ -68,36 +68,32 @@ def sync_sub_streams(page, issue_changelog_updated):
         if Context.is_selected(CHANGELOGS.tap_stream_id):
             changelog_response = issue.pop("changelog")
             changelogs = changelog_response["histories"]
-            if any(
-                utils.strptime_to_utc(changelog["created"]) >= issue_changelog_updated \
-                    for changelog in changelogs
-            ):
-                changelogs_to_write = []
+            changelogs_to_write = []
 
-                # when expanding changelogs for an issue, jira returns 100
-                if changelog_response['maxResults'] >= changelog_response['total']:
-                    for changelog in changelogs:
+            # when expanding changelogs for an issue, jira returns 100
+            if changelog_response['maxResults'] >= changelog_response['total']:
+                for changelog in changelogs:
+                    changelogs_to_write.append(changelog)
+            else:
+                pager = Paginator(Context.client, order_by="sequence")
+                fetch_more_changelogs = True
+                for page in pager.pages(
+                    CHANGELOGS.tap_stream_id,
+                    "GET",
+                    "/rest/api/2/issue/{}/changelog".format(issue["id"])
+                ):
+                    for changelog in page:
+                        if utils.strptime_to_utc(changelog["created"]) < issue_changelog_updated:
+                            fetch_more_changelogs = False
+
                         changelogs_to_write.append(changelog)
-                else:
-                    pager = Paginator(Context.client, order_by="sequence")
-                    fetch_more_changelogs = True
-                    for page in pager.pages(
-                        CHANGELOGS.tap_stream_id,
-                        "GET",
-                        "/rest/api/2/issue/{}/changelog".format(issue["id"])
-                    ):
-                        for changelog in page:
-                            if utils.strptime_to_utc(changelog["created"]) < issue_changelog_updated:
-                                fetch_more_changelogs = False
 
-                            changelogs_to_write.append(changelog)
+                    if not fetch_more_changelogs:
+                        break
 
-                        if not fetch_more_changelogs:
-                            break
-
-                CHANGELOGS.write_page(
-                    [{ **changelog, 'issueId': issue["id"] } for changelog in changelogs_to_write]
-                )
+            CHANGELOGS.write_page(
+                [{ **changelog, 'issueId': issue["id"] } for changelog in changelogs_to_write]
+            )
 
         transitions = issue.pop("transitions")
         if transitions and Context.is_selected(ISSUE_TRANSITIONS.tap_stream_id):
@@ -373,9 +369,9 @@ class Issues(Stream):
         last_updated = Context.update_start_date_bookmark(updated_bookmark)
         timezone = Context.retrieve_timezone()
         start_date = last_updated.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
-        if datetime.datetime(2024, 5, 17, 0, 0, tzinfo=pytz.utc) < last_updated < datetime.datetime(2024, 7, 23, 5, 0, 0, tzinfo=pytz.utc):
+        if datetime.datetime(2024, 7, 15, 0, 0, tzinfo=pytz.utc) < last_updated < datetime.datetime(2024, 7, 23, 5, 0, 0, tzinfo=pytz.utc):
             LOGGER.info('state is in broken timeframe, going back in time to ensure all issues are ingested')
-            start_date = datetime.datetime(2024, 5, 17, 0, 0, tzinfo=pytz.utc).strftime("%Y-%m-%d %H:%M")
+            start_date = datetime.datetime(2024, 7, 15, 0, 0, tzinfo=pytz.utc).strftime("%Y-%m-%d %H:%M")
 
         issue_changelogs_updated_bookmark_path = [CHANGELOGS.tap_stream_id, project_key_or_id, "updated"]
         issue_changelogs_updated = Context.update_start_date_bookmark(issue_changelogs_updated_bookmark_path)
