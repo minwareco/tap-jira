@@ -148,12 +148,12 @@ class Stream():
 
 
 class Projects(Stream):
-    def sync(self):
+    def sync(self, getAll = False):
         projects = Context.client.request(
             self.tap_stream_id, "GET", "/rest/api/2/project",
             params={"expand": "description,lead,url,projectKeys"})
         # apply projects filter if applicable
-        projectsFilter = Context.get_projects()
+        projectsFilter = '' if getAll else Context.get_projects()
         if len(projectsFilter) > 0:
             # remove all project ids and keys when:
             # 1. the project doesn't exist in list of projects
@@ -163,11 +163,15 @@ class Projects(Stream):
             ))
             projectsFilter = [pf for pf in projectsFilter if pf in allPossibleProjectFilterValues]
             newProjectsConfig = ','.join(projectsFilter)
-            if newProjectsConfig != Context.config["projects"]:
+            if newProjectsConfig != ','.join(Context.get_projects()):
                 LOGGER.warn('projects config contains unavailable projects: \n\t{}\n\tUPDATED TO\n\t{}'.format(Context.config["projects"], newProjectsConfig))
                 # other streams will not check for project availability explicitly, so update the config here
                 Context.config["projects"] = newProjectsConfig
             projects = list(filter(lambda p: p["key"] in projectsFilter or p["id"] in projectsFilter, projects))
+
+        # If just fetching all the projects, return early
+        if getAll:
+            return projects
 
         for project in projects:
             # The Jira documentation suggests that a "versions" key may appear
@@ -326,7 +330,7 @@ class Issues(Stream):
                         func_call_future.result()
                 except Exception as ex:
                     LOGGER.exception(ex)
-        
+
         self.delete_old_state()
 
     def delete_old_state(self):

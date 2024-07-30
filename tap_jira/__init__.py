@@ -97,6 +97,11 @@ def sync():
     for stream in streams_.ALL_STREAMS:
         output_schema(stream)
 
+    # Fetch the list of all projects to enable exclude and per-project state
+    projectInitFetchStream = streams_.Projects("projects", ["id"])
+    projects = projectInitFetchStream.sync(True)
+    Context.set_available_projects(projects)
+
     for stream in streams_.ALL_STREAMS:
         if not Context.is_selected(stream.tap_stream_id):
             continue

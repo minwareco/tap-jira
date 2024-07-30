@@ -9,17 +9,33 @@ class Context():
     catalog = None
     client = None
     stream_map = {}
+    allProjectsList = []
 
     @classmethod
     def get_projects(cls):
         projectsRaw = cls.config.get("projects", None)
+        excludeProjects = cls.config.get("exclude_projects", None)
         if projectsRaw:
             # convert comma-separated list into array
             projectsList = list(map(lambda p: p.strip(), projectsRaw.split(",")))
             # filter out empty strings
             projectsList = list(filter(lambda p: len(p) > 0, projectsList))
             return projectsList
-        return []
+        elif excludeProjects:
+            # convert comma-separated list into array
+            excludeProjectsList = list(map(lambda p: p.strip(), excludeProjects.split(",")))
+            # filter out empty strings
+            excludeProjectsList = list(filter(lambda p: len(p) > 0, excludeProjectsList))
+            return list(set(cls.allProjectsList) - set(excludeProjectsList))
+        else:
+            return cls.allProjectsList
+
+    @classmethod
+    def set_available_projects(cls, projectList):
+        projectKeys = []
+        for project in projectList:
+            projectKeys.append(project["key"])
+        cls.allProjectsList = projectKeys
 
     @classmethod
     def get_catalog_entry(cls, stream_name):
