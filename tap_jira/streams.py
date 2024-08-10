@@ -372,7 +372,6 @@ class Issues(Stream):
 
         issue_changelogs_updated_bookmark_path = [CHANGELOGS.tap_stream_id, project_key_or_id, "updated"]
         issue_changelogs_updated = Context.update_start_date_bookmark(issue_changelogs_updated_bookmark_path)
-        LOGGER.info('changelog updated state {}'.format(issue_changelogs_updated))
         if datetime.datetime(2024, 7, 15, 0, 0, tzinfo=pytz.utc) < issue_changelogs_updated < datetime.datetime(2024, 8, 10, 5, 0, 0, tzinfo=pytz.utc):
             LOGGER.info('changelog state is in broken timeframe, going back in time to ensure all issues are ingested')
             start_date = datetime.datetime(2024, 7, 15, 0, 0, tzinfo=pytz.utc).strftime("%Y-%m-%d %H:%M")
