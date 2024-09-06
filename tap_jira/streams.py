@@ -410,6 +410,11 @@ class Issues(Stream):
                 # so we decided to just strip the field out for now.
                 issue['fields'].pop('operations', None)
 
+                excluded_fields = Context.get_excluded_fields()
+                for k, v in issue['fields'].items():
+                    if k in excluded_fields or v['id'] in excluded_fields:
+                        del issue['fields'][k]
+                    
                 # Rename all of the custom fields
                 for k in list(issue['fields'].keys()):
                     if k[:len('customfield_')] == 'customfield_':
