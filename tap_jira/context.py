@@ -94,5 +94,5 @@ class Context():
         return response.json()["timeZone"]
 
     @classmethod
-    def get_excluded_fields(cls):
-        return cls.config.get("excluded_fields", [])
+    def get_exclude_issue_fields(cls):
+        return [str(x) for x in cls.config.get("exclude_issue_fields", [])]
