@@ -101,13 +101,13 @@ def sync_sub_streams(page, issue_changelog_updated):
                 changelog_items = []
                 for item in changelog['items']:
                     if 'fieldId' in item and should_exclude_field(item['fieldId'], item['field']):
-                        if item['from'] is not None:
+                        if item['from'] is not None and item['from'] != '':
                             item['from'] = '<REDACTED>'
-                        if item['fromString'] is not None:
+                        if item['fromString'] is not None and item['fromString'] != '':
                             item['fromString'] = '<REDACTED>'
-                        if item['to'] is not None:
+                        if item['to'] is not None and item['to'] != '':
                             item['to'] = '<REDACTED>'
-                        if item['toString'] is not None:
+                        if item['toString'] is not None and item['toString'] != '':
                             item['toString'] = '<REDACTED>'
                         
                     changelog_items.append(item)
