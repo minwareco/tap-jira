@@ -101,8 +101,15 @@ def sync_sub_streams(page, issue_changelog_updated):
                 changelog_items = []
                 for item in changelog['items']:
                     if 'fieldId' in item and should_exclude_field(item['fieldId'], item['field']):
-                        continue
-
+                        if item['from'] is not None:
+                            item['from'] = '<REDACTED>'
+                        if item['fromString'] is not None:
+                            item['fromString'] = '<REDACTED>'
+                        if item['to'] is not None:
+                            item['to'] = '<REDACTED>'
+                        if item['toString'] is not None:
+                            item['toString'] = '<REDACTED>'
+                        
                     changelog_items.append(item)
                 changelog['items'] = changelog_items
 
@@ -434,7 +441,6 @@ class Issues(Stream):
 
                 # Rename all of the custom fields
                 # filter excluded fields
-                excluded_fields = Context.get_exclude_issue_fields()
                 for k in list(issue['fields'].keys()):
                     if k[:len('customfield_')] == 'customfield_':
                         val = issue['fields'][k]
@@ -443,7 +449,7 @@ class Issues(Stream):
 
                     if fieldNames[k] in issue['fields'] and should_exclude_field(k, fieldNames[k]):
                         LOGGER.debug('Excluding field {} - {}'.format(k, fieldNames[k]))
-                        del issue['fields'][fieldNames[k]]
+                        issue['fields'][fieldNames[k]] = '<REDACTED>'
 
                 # Now, go through and separate fields we don't recognize into "_custom"
                 customFields = {}
