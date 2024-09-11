@@ -57,6 +57,18 @@ def raise_if_bookmark_cannot_advance(worklogs):
                         .format(worklog_updatedes[0]))
 
 
+def should_exclude_field(field_id, field_name):
+    excluded_fields = Context.get_exclude_issue_fields()
+    if field_id in excluded_fields:
+        return True
+    
+    if field_id.startswith('customfield_'):
+        custom_field_id = field_id[len('customfield_'):]
+        if field_name.rstrip('_' + custom_field_id) in excluded_fields: 
+            return True
+    
+    return False
+
 def sync_sub_streams(page, issue_changelog_updated):
     for issue in page:
         comments = issue["fields"].pop("comment")["comments"]
@@ -83,6 +95,23 @@ def sync_sub_streams(page, issue_changelog_updated):
                 ):
                     for changelog in page:
                         changelogs_to_write.append(changelog)
+
+
+            for changelog in changelogs_to_write:
+                changelog_items = []
+                for item in changelog['items']:
+                    if 'fieldId' in item and should_exclude_field(item['fieldId'], item['field']):
+                        if item['from'] is not None and item['from'] != '':
+                            item['from'] = '<REDACTED>'
+                        if item['fromString'] is not None and item['fromString'] != '':
+                            item['fromString'] = '<REDACTED>'
+                        if item['to'] is not None and item['to'] != '':
+                            item['to'] = '<REDACTED>'
+                        if item['toString'] is not None and item['toString'] != '':
+                            item['toString'] = '<REDACTED>'
+                        
+                    changelog_items.append(item)
+                changelog['items'] = changelog_items
 
             CHANGELOGS.write_page(
                 [{ **changelog, 'issueId': issue["id"] } for changelog in changelogs_to_write]
@@ -411,11 +440,16 @@ class Issues(Stream):
                 issue['fields'].pop('operations', None)
 
                 # Rename all of the custom fields
+                # filter excluded fields
                 for k in list(issue['fields'].keys()):
                     if k[:len('customfield_')] == 'customfield_':
                         val = issue['fields'][k]
                         del issue['fields'][k]
                         issue['fields'][fieldNames[k]] = val
+
+                    if fieldNames[k] in issue['fields'] and should_exclude_field(k, fieldNames[k]):
+                        LOGGER.debug('Excluding field {} - {}'.format(k, fieldNames[k]))
+                        issue['fields'][fieldNames[k]] = '<REDACTED>'
 
                 # Now, go through and separate fields we don't recognize into "_custom"
                 customFields = {}

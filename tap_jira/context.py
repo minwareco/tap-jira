@@ -92,3 +92,7 @@ class Context():
         response = cls.client.send("GET", "/rest/api/2/myself")
         response.raise_for_status()
         return response.json()["timeZone"]
+
+    @classmethod
+    def get_exclude_issue_fields(cls):
+        return [str(x) for x in cls.config.get("exclude_issue_fields", [])]
