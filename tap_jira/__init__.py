@@ -41,7 +41,7 @@ def mask_secrets(config, logger):
                 "jwt_shared_secret"]
     for secret in SECRETS:
         if secret in config:
-            logger.addToken(secret);
+            logger.addToken(config[secret])
 
 def get_args():
     unchecked_args = utils.parse_args([])
