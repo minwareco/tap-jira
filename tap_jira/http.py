@@ -8,7 +8,6 @@ import requests
 import atlassian_jwt
 from singer import metrics
 import backoff
-import simplejson
 
 class RateLimitException(Exception):
     pass
@@ -145,16 +144,7 @@ class Client():
         elif response.text and response.status_code >= 400:
             self.logger.warn('Response body: {}'.format(response.text))
         response.raise_for_status()
-        try:
-            response_json = response.json()
-            return response_json
-        except (ValueError, simplejson.JSONDecodeError) as e:
-            self.logger.error("Failed to parse JSON response from Jira API")
-            self.logger.error(f"Response status code: {response.status_code}")
-            self.logger.error(f"Response text: {response.text[:1000]}")  # Log first 1000 chars of response
-            self.logger.error(f"Request URL: {self.url(args[0])}")
-            self.logger.error(f"Request method: {args[0]}")
-            raise Exception(f"Invalid JSON response from Jira API: {str(e)}") from e
+        return response.json()
 
     def refresh_credentials(self):
         body = {"grant_type": "refresh_token",
