@@ -7,8 +7,8 @@ from requests.auth import HTTPBasicAuth
 import requests
 import atlassian_jwt
 from singer import metrics
-import singer
 import backoff
+import simplejson
 
 class RateLimitException(Exception):
     pass
@@ -22,7 +22,6 @@ REFRESH_TOKEN_EXPIRATION_PERIOD = 3500
 # > 10ms can help avoid performance issues
 TIME_BETWEEN_REQUESTS = timedelta(microseconds=10e3)
 
-LOGGER = singer.get_logger()
 
 def should_retry_httperror(exception):
     """ Retry 500-range errors. """
@@ -34,7 +33,8 @@ def should_retry_httperror(exception):
 
 
 class Client():
-    def __init__(self, config):
+    def __init__(self, config, logger):
+        self.logger = logger
         self.is_cloud = 'oauth_client_id' in config.keys()
         self.jwt_client_key = config.get('jwt_client_key')
         self.jwt_shared_secret = config.get('jwt_shared_secret')
@@ -44,7 +44,7 @@ class Client():
         self.login_timer = None
 
         if self.is_cloud:
-            LOGGER.info("Using OAuth based API authentication")
+            self.logger.info("Using OAuth based API authentication")
             self.auth = None
             self.base_url = 'https://api.atlassian.com/ex/jira/{}{}'
             self.cloud_id = config.get('cloud_id')
@@ -59,11 +59,11 @@ class Client():
             self.refresh_credentials()
             self.test_credentials_are_authorized()
         elif self.jwt_client_key is not None:
-            LOGGER.info("Using JWT API authentication")
+            self.logger.info("Using JWT API authentication")
             self.base_url = config.get("base_url")
             self.auth = None
         else:
-            LOGGER.info("Using Basic Auth API authentication")
+            self.logger.info("Using Basic Auth API authentication")
             self.base_url = config.get("base_url")
             self.auth = HTTPBasicAuth(config.get("username"), config.get("password"))
 
@@ -143,9 +143,18 @@ class Client():
         if response.status_code == 429:
             raise RateLimitException()
         elif response.text and response.status_code >= 400:
-            LOGGER.warn('Response body: {}'.format(response.text))
+            self.logger.warn('Response body: {}'.format(response.text))
         response.raise_for_status()
-        return response.json()
+        try:
+            response_json = response.json()
+            return response_json
+        except (ValueError, simplejson.JSONDecodeError) as e:
+            self.logger.error("Failed to parse JSON response from Jira API")
+            self.logger.error(f"Response status code: {response.status_code}")
+            self.logger.error(f"Response text: {response.text[:1000]}")  # Log first 1000 chars of response
+            self.logger.error(f"Request URL: {self.url(args[0])}")
+            self.logger.error(f"Request method: {args[0]}")
+            raise Exception(f"Invalid JSON response from Jira API: {str(e)}") from e
 
     def refresh_credentials(self):
         body = {"grant_type": "refresh_token",
@@ -162,7 +171,7 @@ class Client():
                 error_message = error_message + ", Response from Jira: {}".format(resp.text)
             raise Exception(error_message) from ex
         finally:
-            LOGGER.info("Starting new login timer")
+            self.logger.info("Starting new login timer")
             self.login_timer = threading.Timer(REFRESH_TOKEN_EXPIRATION_PERIOD,
                                                self.refresh_credentials)
             self.login_timer.start()
