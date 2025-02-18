@@ -2,7 +2,7 @@
 from setuptools import setup, find_packages
 import os
 
-UTILS_VERSION = "22f493552c4eb46b2b5a6d98d7acacd9fb7edf68"
+UTILS_VERSION = "f97b932a0623b60e0de7212033107848340387ef"
 
 setup(name="tap-jira",
       version="2.0.1",
