@@ -346,12 +346,17 @@ class Issues(Stream):
                     func_call = functools.partial(ctx.run, self.sync_project, fieldNames, knownFields, project_key_or_id)
                     func_call_futures.append(executor.submit(func_call))
 
-                ## bubble up any exceptions discovered while syncing a project
-                try:
-                    for func_call_future in func_call_futures:
-                        func_call_future.result()
-                except Exception as ex:
-                    LOGGER.exception(ex)
+                # Add timeout and better error handling for futures
+                for future in func_call_futures:
+                    try:
+                        # Add 30 minute timeout per future
+                        future.result(timeout=1800)
+                    except TimeoutError:
+                        LOGGER.error("Timeout while syncing project - taking longer than 30 minutes")
+                        raise
+                    except Exception as ex:
+                        LOGGER.error("Error syncing project: %s", str(ex))
+                        raise
 
         self.delete_old_state()
 
@@ -378,105 +383,110 @@ class Issues(Stream):
                 Context.set_bookmark(page_num_offset, 0)
 
     def sync_project(self, fieldNames, knownFields, project_key_or_id = None):
-        if project_key_or_id is None:
-            project_key_or_id = self.ALL_PROJECTS_BOOKMARK_KEY
+        try:
+            if project_key_or_id is None:
+                project_key_or_id = self.ALL_PROJECTS_BOOKMARK_KEY
 
-        LOGGER.info('syncing issues for project {}'.format(project_key_or_id))
+            LOGGER.info('syncing issues for project {}'.format(project_key_or_id))
 
-        # build projects filter from config, if any
-        projectsJql = "" if project_key_or_id == self.ALL_PROJECTS_BOOKMARK_KEY \
-            else "project IN ({}) and ".format(project_key_or_id)
+            # build projects filter from config, if any
+            projectsJql = "" if project_key_or_id == self.ALL_PROJECTS_BOOKMARK_KEY \
+                else "project IN ({}) and ".format(project_key_or_id)
 
-        updated_bookmark = [self.tap_stream_id, project_key_or_id, "updated"]
-        page_num_offset = [self.tap_stream_id, project_key_or_id, "offset", "page_num"]
+            updated_bookmark = [self.tap_stream_id, project_key_or_id, "updated"]
+            page_num_offset = [self.tap_stream_id, project_key_or_id, "offset", "page_num"]
 
-        self.check_and_migrate_state(updated_bookmark, page_num_offset)
+            self.check_and_migrate_state(updated_bookmark, page_num_offset)
 
-        last_updated = Context.update_start_date_bookmark(updated_bookmark)
-        timezone = Context.retrieve_timezone()
-        start_date = last_updated.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
-        if datetime.datetime(2024, 7, 15, 0, 0, tzinfo=pytz.utc) < last_updated < datetime.datetime(2024, 8, 10, 5, 0, 0, tzinfo=pytz.utc):
-            LOGGER.info('state is in broken timeframe, going back in time to ensure all issues are ingested')
-            start_date = datetime.datetime(2024, 7, 15, 0, 0, tzinfo=pytz.utc).strftime("%Y-%m-%d %H:%M")
+            last_updated = Context.update_start_date_bookmark(updated_bookmark)
+            timezone = Context.retrieve_timezone()
+            start_date = last_updated.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
+            if datetime.datetime(2024, 7, 15, 0, 0, tzinfo=pytz.utc) < last_updated < datetime.datetime(2024, 8, 10, 5, 0, 0, tzinfo=pytz.utc):
+                LOGGER.info('state is in broken timeframe, going back in time to ensure all issues are ingested')
+                start_date = datetime.datetime(2024, 7, 15, 0, 0, tzinfo=pytz.utc).strftime("%Y-%m-%d %H:%M")
 
-        issue_changelogs_updated_bookmark_path = [CHANGELOGS.tap_stream_id, project_key_or_id, "updated"]
-        issue_changelogs_updated = Context.update_start_date_bookmark(issue_changelogs_updated_bookmark_path)
-        if datetime.datetime(2024, 7, 15, 0, 0, tzinfo=pytz.utc) < issue_changelogs_updated < datetime.datetime(2024, 8, 10, 5, 0, 0, tzinfo=pytz.utc):
-            LOGGER.info('changelog state is in broken timeframe, going back in time to ensure all issues are ingested')
-            start_date = datetime.datetime(2024, 7, 15, 0, 0, tzinfo=pytz.utc).strftime("%Y-%m-%d %H:%M")
-            issue_changelogs_updated = datetime.datetime(2024, 7, 15, 0, 0, tzinfo=pytz.utc)
+            issue_changelogs_updated_bookmark_path = [CHANGELOGS.tap_stream_id, project_key_or_id, "updated"]
+            issue_changelogs_updated = Context.update_start_date_bookmark(issue_changelogs_updated_bookmark_path)
+            if datetime.datetime(2024, 7, 15, 0, 0, tzinfo=pytz.utc) < issue_changelogs_updated < datetime.datetime(2024, 8, 10, 5, 0, 0, tzinfo=pytz.utc):
+                LOGGER.info('changelog state is in broken timeframe, going back in time to ensure all issues are ingested')
+                start_date = datetime.datetime(2024, 7, 15, 0, 0, tzinfo=pytz.utc).strftime("%Y-%m-%d %H:%M")
+                issue_changelogs_updated = datetime.datetime(2024, 7, 15, 0, 0, tzinfo=pytz.utc)
 
-        # grab the time now, before we sync any changelogs
-        # this will be used later to bookmark our progress
-        # there will be some overlap during the sync, but this allows us to avoid saving state per issue
-        issue_changelogs_sync_time = utils.now()
+            # grab the time now, before we sync any changelogs
+            # this will be used later to bookmark our progress
+            # there will be some overlap during the sync, but this allows us to avoid saving state per issue
+            issue_changelogs_sync_time = utils.now()
 
-        LOGGER.info('using updated >= \'{}\''.format(start_date))
+            LOGGER.info('using updated >= \'{}\''.format(start_date))
 
-        # Now fetch all the actual issues, translating custom fields
-        jql = "{} updated >= '{}' order by updated asc".format(projectsJql, start_date).strip()
-        params = {"fields": "*all",
-                  "expand": "changelog,transitions",
-                  "validateQuery": "strict",
-                  "maxResults": 100,
-                  "jql": jql}
-        page_num = Context.bookmark(page_num_offset) or 0
-        pager = Paginator(Context.client, items_key="issues", page_num=page_num)
-        for page in pager.pages(self.tap_stream_id,
-                                "GET", "/rest/api/2/search",
-                                params=params):
-            # sync comments and changelogs for each issue
-            sync_sub_streams(page, issue_changelogs_updated)
-            for issue in page:
-                issue['fields'].pop('worklog', None)
-                # The JSON schema for the search endpoint indicates an "operations"
-                # field can be present. This field is self-referential, making it
-                # difficult to deal with - we would have to flatten the operations
-                # and just have each operation include the IDs of other operations
-                # it references. However the operations field has something to do
-                # with the UI within Jira - I believe the operations are parts of
-                # the "menu" bar for each issue. This is of questionable utility,
-                # so we decided to just strip the field out for now.
-                issue['fields'].pop('operations', None)
+            # Now fetch all the actual issues, translating custom fields
+            jql = "{} updated >= '{}' order by updated asc".format(projectsJql, start_date).strip()
+            params = {"fields": "*all",
+                      "expand": "changelog,transitions",
+                      "validateQuery": "strict",
+                      "maxResults": 100,
+                      "jql": jql}
+            page_num = Context.bookmark(page_num_offset) or 0
+            pager = Paginator(Context.client, items_key="issues", page_num=page_num)
+            for page in pager.pages(self.tap_stream_id,
+                                    "GET", "/rest/api/2/search",
+                                    params=params):
+                # sync comments and changelogs for each issue
+                sync_sub_streams(page, issue_changelogs_updated)
+                for issue in page:
+                    issue['fields'].pop('worklog', None)
+                    # The JSON schema for the search endpoint indicates an "operations"
+                    # field can be present. This field is self-referential, making it
+                    # difficult to deal with - we would have to flatten the operations
+                    # and just have each operation include the IDs of other operations
+                    # it references. However the operations field has something to do
+                    # with the UI within Jira - I believe the operations are parts of
+                    # the "menu" bar for each issue. This is of questionable utility,
+                    # so we decided to just strip the field out for now.
+                    issue['fields'].pop('operations', None)
 
-                # Rename all of the custom fields
-                # filter excluded fields
-                for k in list(issue['fields'].keys()):
-                    if k[:len('customfield_')] == 'customfield_':
-                        val = issue['fields'][k]
-                        del issue['fields'][k]
-                        issue['fields'][fieldNames[k]] = val
+                    # Rename all of the custom fields
+                    # filter excluded fields
+                    for k in list(issue['fields'].keys()):
+                        if k[:len('customfield_')] == 'customfield_':
+                            val = issue['fields'][k]
+                            del issue['fields'][k]
+                            issue['fields'][fieldNames[k]] = val
 
-                    if fieldNames[k] in issue['fields'] and should_exclude_field(k, fieldNames[k]):
-                        LOGGER.debug('Excluding field {} - {}'.format(k, fieldNames[k]))
-                        issue['fields'][fieldNames[k]] = '<REDACTED>'
+                        if fieldNames[k] in issue['fields'] and should_exclude_field(k, fieldNames[k]):
+                            LOGGER.debug('Excluding field {} - {}'.format(k, fieldNames[k]))
+                            issue['fields'][fieldNames[k]] = '<REDACTED>'
 
-                # Now, go through and separate fields we don't recognize into "_custom"
-                customFields = {}
-                for k in list(issue['fields'].keys()):
-                    # If we don't know about this field, then put it in a "_custom" object for
-                    # outputting as a single JSON
-                    if not k in knownFields:
-                        val = issue['fields'][k]
-                        # Don't include null values, which just waste a bunch of space
-                        if val != None:
-                            customFields[k] = val
-                        del issue['fields'][k]
-                issue['fields']['_custom'] = json.dumps(customFields)
+                    # Now, go through and separate fields we don't recognize into "_custom"
+                    customFields = {}
+                    for k in list(issue['fields'].keys()):
+                        # If we don't know about this field, then put it in a "_custom" object for
+                        # outputting as a single JSON
+                        if not k in knownFields:
+                            val = issue['fields'][k]
+                            # Don't include null values, which just waste a bunch of space
+                            if val != None:
+                                customFields[k] = val
+                            del issue['fields'][k]
+                    issue['fields']['_custom'] = json.dumps(customFields)
 
 
-            # Grab last_updated before transform in write_page
-            last_updated = utils.strptime_to_utc(page[-1]["fields"]["updated"])
+                # Grab last_updated before transform in write_page
+                last_updated = utils.strptime_to_utc(page[-1]["fields"]["updated"])
+                with self.write_lock:
+                    self.write_page(page)
+
+                    Context.set_bookmark(page_num_offset, pager.next_page_num)
+                    singer.write_state(Context.state)
             with self.write_lock:
-                self.write_page(page)
-
-                Context.set_bookmark(page_num_offset, pager.next_page_num)
+                Context.set_bookmark(page_num_offset, None)
+                Context.set_bookmark(updated_bookmark, last_updated)
+                Context.set_bookmark(issue_changelogs_updated_bookmark_path, issue_changelogs_sync_time)
                 singer.write_state(Context.state)
-        with self.write_lock:
-            Context.set_bookmark(page_num_offset, None)
-            Context.set_bookmark(updated_bookmark, last_updated)
-            Context.set_bookmark(issue_changelogs_updated_bookmark_path, issue_changelogs_sync_time)
-            singer.write_state(Context.state)
+
+        except Exception as ex:
+            LOGGER.error("Error in sync_project for %s: %s", project_key_or_id, str(ex))
+            raise
 
 
 class Worklogs(Stream):
