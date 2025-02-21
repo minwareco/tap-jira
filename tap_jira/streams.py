@@ -351,7 +351,7 @@ class Issues(Stream):
                     for func_call_future in func_call_futures:
                         func_call_future.result()
                 except Exception as ex:
-                    LOGGER.error("Issues.sync encountered an error in a thread: %s", exc)
+                    LOGGER.error("Issues.sync encountered an error in a thread: %s", ex)
                     raise ex
 
         self.delete_old_state()
