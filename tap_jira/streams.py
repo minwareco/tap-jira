@@ -11,7 +11,7 @@ from singer import metrics, utils, metadata, Transformer, Timer
 from .http import Paginator
 from .context import Context
 from itertools import chain
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from minware_singer_utils import SecureLogger
 
@@ -346,12 +346,15 @@ class Issues(Stream):
                     func_call = functools.partial(ctx.run, self.sync_project, fieldNames, knownFields, project_key_or_id)
                     func_call_futures.append(executor.submit(func_call))
 
-                ## bubble up any exceptions discovered while syncing a project
+                # bubble up any exceptions discovered while syncing a project
                 try:
-                    for func_call_future in func_call_futures:
-                        func_call_future.result()
+                    for future in as_completed(func_call_futures):
+                        # result() will raise any exception from that thread
+                        future.result()
                 except Exception as ex:
-                    LOGGER.error("Issues.sync encountered an error in a thread: %s", ex)
+                    LOGGER.error(
+                        "Issues.sync encountered an error in a thread: %s", ex
+                    )
                     raise ex
 
         self.delete_old_state()
