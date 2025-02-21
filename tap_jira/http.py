@@ -111,7 +111,6 @@ class Client():
         (requests.exceptions.ConnectionError, HTTPError),
         jitter=None,
         max_tries=6,
-        max_time=600,
         giveup=lambda e: not should_retry_httperror(e)
     )
     def send(self, method, path, headers={}, **kwargs):
