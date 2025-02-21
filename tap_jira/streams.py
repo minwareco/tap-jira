@@ -349,7 +349,6 @@ class Issues(Stream):
                 # bubble up any exceptions discovered while syncing a project
                 try:
                     for future in as_completed(func_call_futures):
-                        # result() will raise any exception from that thread
                         future.result()
                 except Exception as ex:
                     LOGGER.error(
@@ -481,11 +480,10 @@ class Issues(Stream):
             LOGGER.info("Writing issues for page %d, project %s...", page_index, project_key_or_id)
             with self.write_lock:
                 self.write_page(page)
-                # store offset and state
+
                 Context.set_bookmark(page_num_offset, pager.next_page_num)
                 singer.write_state(Context.state)
             
-            # <--- new log
             LOGGER.info("Finished writing issues for page %d, project %s", page_index, project_key_or_id)
             page_index += 1
         
