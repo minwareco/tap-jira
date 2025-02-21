@@ -351,7 +351,8 @@ class Issues(Stream):
                     for func_call_future in func_call_futures:
                         func_call_future.result()
                 except Exception as ex:
-                    LOGGER.exception(ex)
+                    LOGGER.error("Issues.sync encountered an error in a thread: %s", exc)
+                    raise ex
 
         self.delete_old_state()
 
@@ -381,7 +382,7 @@ class Issues(Stream):
         if project_key_or_id is None:
             project_key_or_id = self.ALL_PROJECTS_BOOKMARK_KEY
 
-        LOGGER.info('syncing issues for project {}'.format(project_key_or_id))
+        LOGGER.info('Begin syncing issues for project {}'.format(project_key_or_id))
 
         # build projects filter from config, if any
         projectsJql = "" if project_key_or_id == self.ALL_PROJECTS_BOOKMARK_KEY \
@@ -422,9 +423,16 @@ class Issues(Stream):
                   "jql": jql}
         page_num = Context.bookmark(page_num_offset) or 0
         pager = Paginator(Context.client, items_key="issues", page_num=page_num)
+
+        page_index = 0
         for page in pager.pages(self.tap_stream_id,
                                 "GET", "/rest/api/2/search",
                                 params=params):
+
+            LOGGER.info(
+                "Fetched page %d with %d issues for project %s",
+                page_index, len(page), project_key_or_id
+            )
             # sync comments and changelogs for each issue
             sync_sub_streams(page, issue_changelogs_updated)
             for issue in page:
@@ -467,16 +475,25 @@ class Issues(Stream):
 
             # Grab last_updated before transform in write_page
             last_updated = utils.strptime_to_utc(page[-1]["fields"]["updated"])
+            LOGGER.info("Writing issues for page %d, project %s...", page_index, project_key_or_id)
             with self.write_lock:
                 self.write_page(page)
-
+                # store offset and state
                 Context.set_bookmark(page_num_offset, pager.next_page_num)
                 singer.write_state(Context.state)
+            
+            # <--- new log
+            LOGGER.info("Finished writing issues for page %d, project %s", page_index, project_key_or_id)
+            page_index += 1
+        
+        # After the loop completes
         with self.write_lock:
             Context.set_bookmark(page_num_offset, None)
             Context.set_bookmark(updated_bookmark, last_updated)
             Context.set_bookmark(issue_changelogs_updated_bookmark_path, issue_changelogs_sync_time)
             singer.write_state(Context.state)
+
+        LOGGER.info('Done syncing project %s', project_key_or_id)
 
 
 class Worklogs(Stream):
