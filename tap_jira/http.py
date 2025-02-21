@@ -106,13 +106,11 @@ class Client():
             6 * 60 * 60 # timeout in seconds = 6 hours
         )
 
-    @backoff.on_exception(
-        backoff.expo,
-        (requests.exceptions.ConnectionError, HTTPError),
-        jitter=None,
-        max_tries=6,
-        giveup=lambda e: not should_retry_httperror(e)
-    )
+    @backoff.on_exception(backoff.expo,
+                          (requests.exceptions.ConnectionError, HTTPError),
+                          jitter=None,
+                          max_tries=6,
+                          giveup=lambda e: not should_retry_httperror(e))
     def send(self, method, path, headers={}, **kwargs):
         if self.is_cloud or self.jwt_client_key is not None:
             # JWT or OAuth Path
