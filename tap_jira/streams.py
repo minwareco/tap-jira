@@ -22,9 +22,7 @@ LOGGER = SecureLogger(singer.get_logger())
 # This tap implements a selective error handling approach for Jira API errors:
 # 
 # 1. Most errors are raised normally and will cause the tap to fail fast
-# 2. Specific HTTP 400 errors from the Jira search API are handled specially:
-#    - If they match known patterns (JQL syntax errors, permission issues),
-#      they are logged as warnings and the sync continues for other projects
+# 2.  HTTP 400 errors from the Jira search API are handled specially:
 #    - This allows the tap to extract data from working projects even when
 #      some projects have configuration or permission issues
 # 3. Detailed error information and statistics are logged to help diagnose issues
@@ -357,22 +355,10 @@ class Issues(Stream):
                 except requests.exceptions.HTTPError as http_err:
                     # Handle specific 400 errors at the project level
                     if http_err.response.status_code == 400 and '/rest/api/2/search' in http_err.response.url:
-                        error_text = http_err.response.text.lower()
-                        safe_to_ignore = (
-                            'jql' in error_text or 
-                            'syntax' in error_text or
-                            'does not exist' in error_text or
-                            'no permission' in error_text
-                        )
-                        
-                        if safe_to_ignore:
-                            LOGGER.warning(f"Project {self.ALL_PROJECTS_BOOKMARK_KEY}: Encountered a handled 400 error with Jira search API")
-                            LOGGER.warning(f"URL: {http_err.response.url}")
-                            LOGGER.warning(f"Response body: {http_err.response.text}")
-                            LOGGER.warning(f"This error is being handled as non-fatal. Sync will continue, but some data may be missing.")
-                        else:
-                            # Re-raise other 400 errors
-                            raise http_err
+                        LOGGER.warning(f"Project {self.ALL_PROJECTS_BOOKMARK_KEY}: Encountered a handled 400 error with Jira search API")
+                        LOGGER.warning(f"URL: {http_err.response.url}")
+                        LOGGER.warning(f"Response body: {http_err.response.text}")
+                        LOGGER.warning(f"This error is being handled as non-fatal. Sync will continue, but some data may be missing.")
                     else:
                         # Re-raise other HTTP errors
                         raise http_err
@@ -381,51 +367,30 @@ class Issues(Stream):
                     LOGGER.error(f"Project {self.ALL_PROJECTS_BOOKMARK_KEY}: Encountered an error: {exc}")
                     raise exc
         else:
-            # Process each project sequentially for simplicity
-            success_count = 0
-            error_count = 0
-            
-            for project_key_or_id in projectsToSync:
-                try:
-                    LOGGER.info(f"Starting sync for project: {project_key_or_id}")
-                    with Timer('issues_sync', { 'project': project_key_or_id }):
-                        self.sync_project(fieldNames, knownFields, project_key_or_id)
-                    LOGGER.info(f"Successfully completed sync for project: {project_key_or_id}")
-                    success_count += 1
-                except requests.exceptions.HTTPError as http_err:
-                    # Handle specific 400 errors at the project level
-                    if http_err.response.status_code == 400 and '/rest/api/2/search' in http_err.response.url:
-                        error_text = http_err.response.text.lower()
-                        safe_to_ignore = (
-                            'jql' in error_text or 
-                            'syntax' in error_text or
-                            'does not exist' in error_text or
-                            'no permission' in error_text
-                        )
-                        
-                        if safe_to_ignore:
-                            LOGGER.warning(f"Project {project_key_or_id}: Encountered a handled 400 error with Jira search API")
-                            LOGGER.warning(f"URL: {http_err.response.url}")
-                            LOGGER.warning(f"Response body: {http_err.response.text}")
-                            LOGGER.warning(f"This error is being handled as non-fatal. Sync will continue with other projects.")
-                            error_count += 1
+            # Process projects in parallel using ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=6) as executor:
+                func_call_futures = []
+                for project_key_or_id in projectsToSync:
+                    ctx = contextvars.copy_context()
+                    func_call = functools.partial(ctx.run, self._sync_project_with_error_handling, 
+                                                 fieldNames, knownFields, project_key_or_id)
+                    func_call_futures.append(executor.submit(func_call))
+                
+                # Process results from all threads
+                success_count = 0
+                error_count = 0
+                
+                for future in as_completed(func_call_futures):
+                    try:
+                        result = future.result()
+                        if result["status"] == "success":
+                            success_count += 1
                         else:
-                            # Log but continue with other projects for other 400 errors
-                            LOGGER.error(f"Project {project_key_or_id}: Encountered an unhandled 400 error: {http_err}")
-                            LOGGER.error(f"URL: {http_err.response.url}")
-                            LOGGER.error(f"Response body: {http_err.response.text}")
-                            LOGGER.error(f"Continuing with other projects.")
                             error_count += 1
-                    else:
-                        # Log but continue with other projects for other HTTP errors
-                        LOGGER.error(f"Project {project_key_or_id}: Encountered an HTTP error: {http_err}")
-                        LOGGER.error(f"Continuing with other projects.")
+                    except Exception as exc:
+                        # This should not happen as errors are handled in _sync_project_with_error_handling
+                        LOGGER.error(f"Unexpected error processing thread result: {exc}")
                         error_count += 1
-                except Exception as exc:
-                    # Log but continue with other projects for other exceptions
-                    LOGGER.error(f"Project {project_key_or_id}: Encountered an error: {exc}")
-                    LOGGER.error(f"Continuing with other projects.")
-                    error_count += 1
             
             # Log summary
             LOGGER.info(f"Completed processing {len(projectsToSync)} projects:")
@@ -466,6 +431,33 @@ class Issues(Stream):
                 LOGGER.info('Updated being copied from previous state format')
                 Context.set_bookmark(updated_bookmark, non_project_updated_bookmark)
                 Context.set_bookmark(page_num_offset, 0)
+
+    def _sync_project_with_error_handling(self, fieldNames, knownFields, project_key_or_id):
+        """Wrapper method to handle errors during project sync in threads"""
+        try:
+            LOGGER.info(f"Starting sync for project: {project_key_or_id}")
+            with Timer('issues_sync', { 'project': project_key_or_id }):
+                self.sync_project(fieldNames, knownFields, project_key_or_id)
+            LOGGER.info(f"Successfully completed sync for project: {project_key_or_id}")
+            return {"status": "success", "project": project_key_or_id}
+        except requests.exceptions.HTTPError as http_err:
+            # Handle specific 400 errors at the project level
+            if http_err.response.status_code == 400 and '/rest/api/2/search' in http_err.response.url:
+                LOGGER.warning(f"Project {project_key_or_id}: Encountered a handled 400 error with Jira search API")
+                LOGGER.warning(f"URL: {http_err.response.url}")
+                LOGGER.warning(f"Response body: {http_err.response.text}")
+                LOGGER.warning(f"This error is being handled as non-fatal. Sync will continue with other projects.")
+                return {"status": "error", "project": project_key_or_id, "error_type": "handled_400"}
+            else:
+                # Log but continue with other projects for other HTTP errors
+                LOGGER.error(f"Project {project_key_or_id}: Encountered an HTTP error: {http_err}")
+                LOGGER.error(f"Continuing with other projects.")
+                return {"status": "error", "project": project_key_or_id, "error_type": "http_error"}
+        except Exception as exc:
+            # Log but continue with other projects for other exceptions
+            LOGGER.error(f"Project {project_key_or_id}: Encountered an error: {exc}")
+            LOGGER.error(f"Continuing with other projects.")
+            return {"status": "error", "project": project_key_or_id, "error_type": "other_error"}
 
     def sync_project(self, fieldNames, knownFields, project_key_or_id = None):
         """Sync a single Jira project."""
