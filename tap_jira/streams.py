@@ -448,7 +448,6 @@ class Issues(Stream):
             raise exc
 
     def sync_project(self, fieldNames, knownFields, project_key_or_id = None):
-        """Sync a single Jira project."""
         if project_key_or_id is None:
             project_key_or_id = self.ALL_PROJECTS_BOOKMARK_KEY
 
