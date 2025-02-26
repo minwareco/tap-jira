@@ -89,7 +89,8 @@ class Context():
     @classmethod
     @cache
     def retrieve_timezone(cls):
-        return cls.client.request("timezone", "GET", "/rest/api/2/myself")
+        response_json = cls.client.request("timezone", "GET", "/rest/api/2/myself")
+        return response_json["timeZone"]
 
     @classmethod
     def get_exclude_issue_fields(cls):
