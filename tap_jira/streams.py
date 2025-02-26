@@ -17,19 +17,6 @@ from minware_singer_utils import SecureLogger
 
 LOGGER = SecureLogger(singer.get_logger())
 
-# Error Handling Strategy:
-# -----------------------
-# This tap implements a selective error handling approach for Jira API errors:
-# 
-# 1. Most errors are raised normally and will cause the tap to fail fast
-# 2.  HTTP 400 errors from the Jira search API are handled specially:
-#    - This allows the tap to extract data from working projects even when
-#      some projects have configuration or permission issues
-# 3. Detailed error information and statistics are logged to help diagnose issues
-#
-# This approach balances reliability (by failing on unexpected errors) with
-# practicality (by continuing when some projects have known issues).
-
 def raise_if_bookmark_cannot_advance(worklogs):
     # Worklogs can only be queried with a `since` timestamp and
     # provides no way to page through the results. The `since`
@@ -372,8 +359,7 @@ class Issues(Stream):
                 func_call_futures = []
                 for project_key_or_id in projectsToSync:
                     ctx = contextvars.copy_context()
-                    func_call = functools.partial(ctx.run, self._sync_project_with_error_handling, 
-                                                 fieldNames, knownFields, project_key_or_id)
+                    func_call = functools.partial(ctx.run, self._sync_project_with_error_handling, fieldNames, knownFields, project_key_or_id)
                     func_call_futures.append(executor.submit(func_call))
                 
                 # Process results from all threads
