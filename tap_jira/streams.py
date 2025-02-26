@@ -365,6 +365,7 @@ class Issues(Stream):
                 # Process results from all threads
                 success_count = 0
                 error_count = 0
+                failed_projects = []
                 
                 for future in as_completed(func_call_futures):
                     try:
@@ -372,17 +373,20 @@ class Issues(Stream):
                         if result["status"] == "success":
                             success_count += 1
                         else:
+                            # This should only happen for handled 400 errors
                             error_count += 1
+                            failed_projects.append(result["project"])
                     except Exception as exc:
-                        # This should not happen as errors are handled in _sync_project_with_error_handling
-                        LOGGER.error(f"Unexpected error processing thread result: {exc}")
-                        error_count += 1
+                        # This will happen for any re-raised exceptions from _sync_project_with_error_handling
+                        # We need to re-raise to ensure the tap fails properly
+                        LOGGER.error(f"A project sync failed with an unhandled error: {exc}")
+                        raise exc
             
-            # Log summary
             LOGGER.info(f"Completed processing {len(projectsToSync)} projects:")
             LOGGER.info(f"  - {success_count} succeeded")
             if error_count > 0:
-                LOGGER.warning(f"  - {error_count} failed with errors (these projects were skipped)")
+                LOGGER.warning(f"  - {error_count} failed with handled errors (these projects were skipped)")
+                LOGGER.warning(f"Failed projects: {', '.join(failed_projects)}")
 
         self.delete_old_state()
 
@@ -435,15 +439,13 @@ class Issues(Stream):
                 LOGGER.warning(f"This error is being handled as non-fatal. Sync will continue with other projects.")
                 return {"status": "error", "project": project_key_or_id, "error_type": "handled_400"}
             else:
-                # Log but continue with other projects for other HTTP errors
+                # Re-raise other HTTP errors
                 LOGGER.error(f"Project {project_key_or_id}: Encountered an HTTP error: {http_err}")
-                LOGGER.error(f"Continuing with other projects.")
-                return {"status": "error", "project": project_key_or_id, "error_type": "http_error"}
+                raise http_err
         except Exception as exc:
-            # Log but continue with other projects for other exceptions
+            # Re-raise other exceptions
             LOGGER.error(f"Project {project_key_or_id}: Encountered an error: {exc}")
-            LOGGER.error(f"Continuing with other projects.")
-            return {"status": "error", "project": project_key_or_id, "error_type": "other_error"}
+            raise exc
 
     def sync_project(self, fieldNames, knownFields, project_key_or_id = None):
         """Sync a single Jira project."""
