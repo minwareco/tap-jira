@@ -318,21 +318,6 @@ class Issues(Stream):
     # jira project keys and jira project ids.
     ALL_PROJECTS_BOOKMARK_KEY = '0_ALL_PROJECTS'
 
-    # Error Handling Strategy:
-    # -----------------------
-    # This class implements a selective error handling approach for Jira API errors:
-    # 
-    # 1. Most errors are raised normally and will cause the tap to fail fast
-    # 2. Specific HTTP 400 errors from the Jira search API are handled specially:
-    #    - If they match known patterns (JQL syntax errors, permission issues),
-    #      they are logged as warnings and the sync continues for other projects
-    #    - This allows the tap to extract data from working projects even when
-    #      some projects have configuration or permission issues
-    # 3. Detailed error information and statistics are logged to help diagnose issues
-    #
-    # This approach balances reliability (by failing on unexpected errors) with
-    # practicality (by continuing when some projects have known issues).
-
     def __init__(self, tap_stream_id, pk_fields, indirect_stream=False, path=None):
         super().__init__(tap_stream_id, pk_fields, indirect_stream, path)
         self.write_lock = threading.Lock()
@@ -368,108 +353,85 @@ class Issues(Stream):
         if len(projectsToSync) == 0:
             with Timer('issues_sync', { 'project': self.ALL_PROJECTS_BOOKMARK_KEY }):
                 try:
-                    result = self.sync_project(fieldNames, knownFields)
-                    if result is not None and isinstance(result, dict):
-                        if result.get("status") == "error":
-                            error_type = result.get("error_type", "unknown")
-                            if error_type in ["handled_400", "unhandled_400", "http_error", "unexpected_error"]:
-                                LOGGER.warning(f"Project {result.get('project')}: Completed with error: {error_type}")
-                                LOGGER.warning(f"Error details: {result.get('error_details', 'No details available')}")
-                                # For the ALL_PROJECTS_BOOKMARK_KEY case, we should exit with an error
-                                # since there are no other projects to try
-                                if error_type != "handled_400":
-                                    raise Exception(f"Failed to sync all projects: {result.get('error', 'Unknown error')}")
-                            else:
-                                LOGGER.error(f"Project {result.get('project')}: Completed with error: {error_type}")
-                        else:
-                            LOGGER.info(f"Project {result.get('project')}: Completed successfully")
-                except Exception as ex:
-                    # Log the error but don't re-raise it if it's a handled HTTP 400 error
-                    if isinstance(ex, requests.exceptions.HTTPError) and ex.response.status_code == 400 and '/rest/api/2/search' in ex.response.url:
-                        error_text = ex.response.text.lower()
+                    self.sync_project(fieldNames, knownFields)
+                except requests.exceptions.HTTPError as http_err:
+                    # Handle specific 400 errors at the project level
+                    if http_err.response.status_code == 400 and '/rest/api/2/search' in http_err.response.url:
+                        error_text = http_err.response.text.lower()
                         safe_to_ignore = (
                             'jql' in error_text or 
                             'syntax' in error_text or
                             'does not exist' in error_text or
                             'no permission' in error_text
                         )
+                        
                         if safe_to_ignore:
                             LOGGER.warning(f"Project {self.ALL_PROJECTS_BOOKMARK_KEY}: Encountered a handled 400 error with Jira search API")
-                            LOGGER.warning(f"URL: {ex.response.url}")
-                            LOGGER.warning(f"Response body: {ex.response.text}")
+                            LOGGER.warning(f"URL: {http_err.response.url}")
+                            LOGGER.warning(f"Response body: {http_err.response.text}")
                             LOGGER.warning(f"This error is being handled as non-fatal. Sync will continue, but some data may be missing.")
                         else:
-                            LOGGER.error(f"Project {self.ALL_PROJECTS_BOOKMARK_KEY}: Encountered an unexpected 400 error")
-                            LOGGER.error(f"URL: {ex.response.url}")
-                            LOGGER.error(f"Response body: {ex.response.text}")
-                            raise ex
+                            # Re-raise other 400 errors
+                            raise http_err
                     else:
-                        # Re-raise other exceptions
-                        LOGGER.error(f"Project {self.ALL_PROJECTS_BOOKMARK_KEY}: Encountered an error: {ex}")
-                        raise ex
+                        # Re-raise other HTTP errors
+                        raise http_err
+                except Exception as exc:
+                    # Re-raise other exceptions
+                    LOGGER.error(f"Project {self.ALL_PROJECTS_BOOKMARK_KEY}: Encountered an error: {exc}")
+                    raise exc
         else:
-            with ThreadPoolExecutor(max_workers=6) as executor:
-                func_call_futures = []
-                for project_key_or_id in projectsToSync:
-                    ctx = contextvars.copy_context()
-                    func_call = functools.partial(ctx.run, self.sync_project, fieldNames, knownFields, project_key_or_id)
-                    func_call_futures.append(executor.submit(func_call))
-
-                # Process results from all threads
-                results = []
-                for future in as_completed(func_call_futures):
-                    try:
-                        result = future.result()
-                        if result is not None and isinstance(result, dict):
-                            if result.get("status") == "error":
-                                # This is a thread that encountered a handled error
-                                error_type = result.get("error_type", "unknown")
-                                if error_type == "handled_400":
-                                    LOGGER.warning(f"Project {result.get('project')}: Completed with handled error (continuing)")
-                                else:
-                                    LOGGER.error(f"Project {result.get('project')}: Completed with error: {error_type}")
-                                    LOGGER.error(f"Error details: {result.get('error_details', 'No details available')}")
-                                results.append(result)
-                            else:
-                                # This is a thread that completed successfully
-                                LOGGER.info(f"Project {result.get('project')}: Completed successfully")
-                                results.append({"status": "success", "project": result.get("project")})
+            # Process each project sequentially for simplicity
+            success_count = 0
+            error_count = 0
+            
+            for project_key_or_id in projectsToSync:
+                try:
+                    LOGGER.info(f"Starting sync for project: {project_key_or_id}")
+                    with Timer('issues_sync', { 'project': project_key_or_id }):
+                        self.sync_project(fieldNames, knownFields, project_key_or_id)
+                    LOGGER.info(f"Successfully completed sync for project: {project_key_or_id}")
+                    success_count += 1
+                except requests.exceptions.HTTPError as http_err:
+                    # Handle specific 400 errors at the project level
+                    if http_err.response.status_code == 400 and '/rest/api/2/search' in http_err.response.url:
+                        error_text = http_err.response.text.lower()
+                        safe_to_ignore = (
+                            'jql' in error_text or 
+                            'syntax' in error_text or
+                            'does not exist' in error_text or
+                            'no permission' in error_text
+                        )
+                        
+                        if safe_to_ignore:
+                            LOGGER.warning(f"Project {project_key_or_id}: Encountered a handled 400 error with Jira search API")
+                            LOGGER.warning(f"URL: {http_err.response.url}")
+                            LOGGER.warning(f"Response body: {http_err.response.text}")
+                            LOGGER.warning(f"This error is being handled as non-fatal. Sync will continue with other projects.")
+                            error_count += 1
                         else:
-                            # Handle unexpected result format
-                            LOGGER.warning(f"Received unexpected result format from thread: {result}")
-                            results.append({"status": "error", "project": "unknown", "error": "Unexpected result format", "error_type": "unexpected_format"})
-                    except Exception as ex:
-                        # This is a thread that encountered an error we're not ignoring
-                        LOGGER.error(f"Issues.sync encountered an error in a thread: {ex}")
-                        results.append({"status": "error", "project": "unknown", "error": str(ex), "error_type": "unhandled"})
-                        # Don't raise the exception here to allow other projects to continue
-                        # We'll log it and continue with other projects
-
-                # Log summary of results
-                success_count = sum(1 for r in results if r.get("status") == "success")
-                handled_error_count = sum(1 for r in results if r.get("status") == "error" and r.get("error_type") == "handled_400")
-                other_error_count = len(results) - success_count - handled_error_count
-                
-                # Log a more detailed summary
-                LOGGER.info(f"Completed processing {len(results)} projects:")
-                LOGGER.info(f"  - {success_count} succeeded")
-                if handled_error_count > 0:
-                    LOGGER.warning(f"  - {handled_error_count} failed with handled errors (these projects were skipped)")
-                if other_error_count > 0:
-                    LOGGER.error(f"  - {other_error_count} failed with other errors")
-                
-                # Log details of failed projects
-                if handled_error_count > 0 or other_error_count > 0:
-                    failed_projects = [r.get("project") for r in results if r.get("status") == "error"]
-                    LOGGER.warning(f"Failed projects: {', '.join(failed_projects)}")
-                
-                # If there were unhandled errors, raise an exception to indicate the sync wasn't completely successful
-                if other_error_count > 0:
-                    unhandled_errors = [r for r in results if r.get("status") == "error" and r.get("error_type") != "handled_400"]
-                    if unhandled_errors:
-                        error_msg = f"Encountered {other_error_count} unhandled errors during project synchronization"
-                        LOGGER.error(error_msg)
-                        # Don't raise an exception here to allow the tap to complete with partial data
+                            # Log but continue with other projects for other 400 errors
+                            LOGGER.error(f"Project {project_key_or_id}: Encountered an unhandled 400 error: {http_err}")
+                            LOGGER.error(f"URL: {http_err.response.url}")
+                            LOGGER.error(f"Response body: {http_err.response.text}")
+                            LOGGER.error(f"Continuing with other projects.")
+                            error_count += 1
+                    else:
+                        # Log but continue with other projects for other HTTP errors
+                        LOGGER.error(f"Project {project_key_or_id}: Encountered an HTTP error: {http_err}")
+                        LOGGER.error(f"Continuing with other projects.")
+                        error_count += 1
+                except Exception as exc:
+                    # Log but continue with other projects for other exceptions
+                    LOGGER.error(f"Project {project_key_or_id}: Encountered an error: {exc}")
+                    LOGGER.error(f"Continuing with other projects.")
+                    error_count += 1
+            
+            # Log summary
+            LOGGER.info(f"Completed processing {len(projectsToSync)} projects:")
+            LOGGER.info(f"  - {success_count} succeeded")
+            if error_count > 0:
+                LOGGER.warning(f"  - {error_count} failed with errors (these projects were skipped)")
 
         self.delete_old_state()
 
@@ -506,22 +468,7 @@ class Issues(Stream):
                 Context.set_bookmark(page_num_offset, 0)
 
     def sync_project(self, fieldNames, knownFields, project_key_or_id = None):
-        """Sync a single Jira project.
-        
-        Error Handling Strategy:
-        -----------------------
-        This method implements a selective error handling approach for Jira API errors:
-        
-        1. Most errors are raised normally and will cause the tap to fail fast
-        2. Specific HTTP 400 errors from the Jira search API are handled specially:
-           - If they match known patterns (JQL syntax errors, permission issues),
-             they are logged as warnings and the sync continues for other projects
-           - This allows the tap to extract data from working projects even when
-             some projects have configuration or permission issues
-        
-        This approach balances reliability (by failing on unexpected errors) with
-        practicality (by continuing when some projects have known issues).
-        """
+        """Sync a single Jira project."""
         if project_key_or_id is None:
             project_key_or_id = self.ALL_PROJECTS_BOOKMARK_KEY
 
@@ -568,148 +515,74 @@ class Issues(Stream):
         pager = Paginator(Context.client, items_key="issues", page_num=page_num)
 
         page_index = 0
-        try:
-            for page in pager.pages(self.tap_stream_id,
-                                    "GET", "/rest/api/2/search",
-                                    params=params):
+        for page in pager.pages(self.tap_stream_id,
+                                "GET", "/rest/api/2/search",
+                                params=params):
 
-                LOGGER.info(
-                    "Fetched page %d with %d issues for project %s",
-                    page_index, len(page), project_key_or_id
-                )
-                # sync comments and changelogs for each issue
-                sync_sub_streams(page, issue_changelogs_updated)
-                for issue in page:
-                    issue['fields'].pop('worklog', None)
-                    # The JSON schema for the search endpoint indicates an "operations"
-                    # field can be present. This field is self-referential, making it
-                    # difficult to deal with - we would have to flatten the operations
-                    # and just have each operation include the IDs of other operations
-                    # it references. However the operations field has something to do
-                    # with the UI within Jira - I believe the operations are parts of
-                    # the "menu" bar for each issue. This is of questionable utility,
-                    # so we decided to just strip the field out for now.
-                    issue['fields'].pop('operations', None)
+            LOGGER.info(
+                "Fetched page %d with %d issues for project %s",
+                page_index, len(page), project_key_or_id
+            )
+            # sync comments and changelogs for each issue
+            sync_sub_streams(page, issue_changelogs_updated)
+            for issue in page:
+                issue['fields'].pop('worklog', None)
+                # The JSON schema for the search endpoint indicates an "operations"
+                # field can be present. This field is self-referential, making it
+                # difficult to deal with - we would have to flatten the operations
+                # and just have each operation include the IDs of other operations
+                # it references. However the operations field has something to do
+                # with the UI within Jira - I believe the operations are parts of
+                # the "menu" bar for each issue. This is of questionable utility,
+                # so we decided to just strip the field out for now.
+                issue['fields'].pop('operations', None)
 
-                    # Rename all of the custom fields
-                    # filter excluded fields
-                    for k in list(issue['fields'].keys()):
-                        if k[:len('customfield_')] == 'customfield_':
-                            val = issue['fields'][k]
-                            del issue['fields'][k]
-                            issue['fields'][fieldNames[k]] = val
+                # Rename all of the custom fields
+                # filter excluded fields
+                for k in list(issue['fields'].keys()):
+                    if k[:len('customfield_')] == 'customfield_':
+                        val = issue['fields'][k]
+                        del issue['fields'][k]
+                        issue['fields'][fieldNames[k]] = val
 
-                        if fieldNames[k] in issue['fields'] and should_exclude_field(k, fieldNames[k]):
-                            LOGGER.debug('Excluding field {} - {}'.format(k, fieldNames[k]))
-                            issue['fields'][fieldNames[k]] = '<REDACTED>'
+                    if fieldNames[k] in issue['fields'] and should_exclude_field(k, fieldNames[k]):
+                        LOGGER.debug('Excluding field {} - {}'.format(k, fieldNames[k]))
+                        issue['fields'][fieldNames[k]] = '<REDACTED>'
 
-                    # Now, go through and separate fields we don't recognize into "_custom"
-                    customFields = {}
-                    for k in list(issue['fields'].keys()):
-                        # If we don't know about this field, then put it in a "_custom" object for
-                        # outputting as a single JSON
-                        if not k in knownFields:
-                            val = issue['fields'][k]
-                            # Don't include null values, which just waste a bunch of space
-                            if val != None:
-                                customFields[k] = val
-                            del issue['fields'][k]
-                    issue['fields']['_custom'] = json.dumps(customFields)
+                # Now, go through and separate fields we don't recognize into "_custom"
+                customFields = {}
+                for k in list(issue['fields'].keys()):
+                    # If we don't know about this field, then put it in a "_custom" object for
+                    # outputting as a single JSON
+                    if not k in knownFields:
+                        val = issue['fields'][k]
+                        # Don't include null values, which just waste a bunch of space
+                        if val != None:
+                            customFields[k] = val
+                        del issue['fields'][k]
+                issue['fields']['_custom'] = json.dumps(customFields)
 
 
-                # Grab last_updated before transform in write_page
-                last_updated = utils.strptime_to_utc(page[-1]["fields"]["updated"])
-                LOGGER.info("Writing issues for page %d, project %s...", page_index, project_key_or_id)
-                with self.write_lock:
-                    self.write_page(page)
-
-                    Context.set_bookmark(page_num_offset, pager.next_page_num)
-                    singer.write_state(Context.state)
-                
-                LOGGER.info("Finished writing issues for page %d, project %s", page_index, project_key_or_id)
-                page_index += 1
-            
-            # After the loop completes
+            # Grab last_updated before transform in write_page
+            last_updated = utils.strptime_to_utc(page[-1]["fields"]["updated"])
+            LOGGER.info("Writing issues for page %d, project %s...", page_index, project_key_or_id)
             with self.write_lock:
-                Context.set_bookmark(page_num_offset, None)
-                Context.set_bookmark(updated_bookmark, last_updated)
-                Context.set_bookmark(issue_changelogs_updated_bookmark_path, issue_changelogs_sync_time)
-                singer.write_state(Context.state)
+                self.write_page(page)
 
-            LOGGER.info('Done syncing project %s', project_key_or_id)
-            return {"status": "success", "project": project_key_or_id}
-        except requests.exceptions.HTTPError as http_err:
-            # Error Handling Strategy:
-            # We selectively handle HTTP 400 errors from the Jira search API to allow
-            # the tap to continue processing other projects even when some projects have
-            # configuration or permission issues. This balances reliability with practicality.
+                Context.set_bookmark(page_num_offset, pager.next_page_num)
+                singer.write_state(Context.state)
             
-            # Handle specific 400 errors at the thread level
-            if http_err.response.status_code == 400 and '/rest/api/2/search' in http_err.response.url:
-                # Log as a warning to ensure visibility while still allowing execution to continue
-                LOGGER.warning(f"Project {project_key_or_id}: Encountered a 400 Bad Request error with Jira search API")
-                LOGGER.warning(f"URL: {http_err.response.url}")
-                LOGGER.warning(f"Response body: {http_err.response.text}")
-                
-                # Check for specific error patterns that are safe to ignore
-                error_text = http_err.response.text.lower()
-                
-                # Common Jira search API errors that can be safely ignored:
-                # 1. Invalid JQL syntax that's specific to this project
-                # 2. Project doesn't exist or user doesn't have access
-                safe_to_ignore = (
-                    'jql' in error_text or 
-                    'syntax' in error_text or
-                    'does not exist' in error_text or
-                    'no permission' in error_text
-                )
-                
-                if safe_to_ignore:
-                    LOGGER.warning(
-                        f"Project {project_key_or_id}: This error is being handled as non-fatal. "
-                        f"Sync will continue for other projects, but data for this project will be missing."
-                    )
-                    # Return early without raising the exception
-                    return {
-                        "status": "error", 
-                        "project": project_key_or_id, 
-                        "error": str(http_err),
-                        "error_type": "handled_400",
-                        "error_details": http_err.response.text
-                    }
-                else:
-                    # For other types of 400 errors that might indicate more serious issues
-                    LOGGER.error(
-                        f"Project {project_key_or_id}: Encountered an unexpected 400 error that doesn't match known patterns. "
-                        f"This could indicate a more serious issue and will be re-raised."
-                    )
-                    return {
-                        "status": "error", 
-                        "project": project_key_or_id, 
-                        "error": str(http_err),
-                        "error_type": "unhandled_400",
-                        "error_details": http_err.response.text
-                    }
-            else:
-                # For other HTTP errors, log and return error status
-                LOGGER.error(f"Project {project_key_or_id}: Encountered HTTP error: {http_err}")
-                return {
-                    "status": "error", 
-                    "project": project_key_or_id, 
-                    "error": str(http_err),
-                    "error_type": "http_error",
-                    "error_details": http_err.response.text if hasattr(http_err, 'response') else str(http_err)
-                }
-        except Exception as ex:
-            # For all other exceptions, log and return error status
-            LOGGER.error(f"Project {project_key_or_id}: Encountered unexpected error: {ex}")
-            return {
-                "status": "error", 
-                "project": project_key_or_id, 
-                "error": str(ex),
-                "error_type": "unexpected_error",
-                "error_details": str(ex)
-            }
+            LOGGER.info("Finished writing issues for page %d, project %s", page_index, project_key_or_id)
+            page_index += 1
+        
+        # After the loop completes
+        with self.write_lock:
+            Context.set_bookmark(page_num_offset, None)
+            Context.set_bookmark(updated_bookmark, last_updated)
+            Context.set_bookmark(issue_changelogs_updated_bookmark_path, issue_changelogs_sync_time)
+            singer.write_state(Context.state)
+
+        LOGGER.info('Done syncing project %s', project_key_or_id)
 
 
 class Worklogs(Stream):
