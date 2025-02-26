@@ -9,8 +9,6 @@ from . import streams as streams_
 from .context import Context
 from .http import Client
 from minware_singer_utils import SecureLogger
-import requests
-import sys
 
 LOGGER = SecureLogger(singer.get_logger())
 
