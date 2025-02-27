@@ -337,22 +337,9 @@ class Issues(Stream):
         projectsToSync = Context.get_projects()
         if len(projectsToSync) == 0:
             with Timer('issues_sync', { 'project': self.ALL_PROJECTS_BOOKMARK_KEY }):
-                try:
-                    self.sync_project(fieldNames, knownFields)
-                except requests.exceptions.HTTPError as http_err:
-                    # Handle specific 400 errors at the project level
-                    if http_err.response.status_code == 400 and '/rest/api/2/search' in http_err.response.url:
-                        LOGGER.warning(f"Project {self.ALL_PROJECTS_BOOKMARK_KEY}: Encountered a handled 400 error with Jira search API")
-                        LOGGER.warning(f"URL: {http_err.response.url}")
-                        LOGGER.warning(f"Response body: {http_err.response.text}")
-                        LOGGER.warning(f"This error is being handled as non-fatal. Sync will continue, but some data may be missing.")
-                    else:
-                        # Re-raise other HTTP errors
-                        raise http_err
-                except Exception as exc:
-                    # Re-raise other exceptions
-                    LOGGER.error(f"Project {self.ALL_PROJECTS_BOOKMARK_KEY}: Encountered an error: {exc}")
-                    raise exc
+                result = self._sync_project_with_error_handling(fieldNames, knownFields, None)
+                if result["status"] != "success":
+                    LOGGER.warning(f"Project sync for ALL_PROJECTS completed with status: {result['status']}")
         else:
             # Process projects in parallel using ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=6) as executor:
