@@ -197,7 +197,9 @@ def sync_sub_streams(page, issue_changelog_updated, changelog_map=None):
             )
 
         # Note: Transitions are not available via expand in API v3
-        # Would require separate API calls per issue which could be expensive
+        # We will need to fetch them separately if they are needed
+        # These are just the transitions that are available for the issue
+        # And we don't need them for the current use case
 
 
 def advance_bookmark(worklogs):
@@ -568,7 +570,7 @@ class Issues(Stream):
         else:
             LOGGER.info("Changelogs stream is NOT selected - skipping changelog fetch")
         
-        # Process issues in batches
+        # Process issues in batches for progress tracking and state emission
         LOGGER.info("Processing %d issues in batches for project %s", len(all_issues), project_key_or_id)
         batch_size = 100
         
