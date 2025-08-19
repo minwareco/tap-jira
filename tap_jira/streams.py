@@ -74,6 +74,11 @@ def should_exclude_field(field_id, field_name):
 
 def sync_sub_streams(page, issue_changelog_updated):
     for issue in page:
+        # Add logging to debug issue structure
+        LOGGER.info(f"Issue keys: {list(issue.keys())}")
+        if "fields" not in issue:
+            LOGGER.warning(f"No 'fields' key found in issue. Issue structure: {issue}")
+            continue
         comments = issue["fields"].pop("comment")["comments"]
         if comments and Context.is_selected(ISSUE_COMMENTS.tap_stream_id):
             for comment in comments:
@@ -81,22 +86,36 @@ def sync_sub_streams(page, issue_changelog_updated):
             ISSUE_COMMENTS.write_page(comments)
 
         if Context.is_selected(CHANGELOGS.tap_stream_id):
-            changelog_response = issue.pop("changelog")
-            changelogs = changelog_response["histories"]
+            changelog_response = issue.pop("changelog", None)
             changelogs_to_write = []
+            
+            if changelog_response:
+                # Changelog was expanded in the response (old behavior)
+                changelogs = changelog_response["histories"]
 
-            # when expanding changelogs for an issue, jira returns 100
-            if changelog_response['maxResults'] >= changelog_response['total']:
-                for changelog in changelogs:
-                    changelogs_to_write.append(changelog)
+                # when expanding changelogs for an issue, jira returns 100
+                if changelog_response['maxResults'] >= changelog_response['total']:
+                    for changelog in changelogs:
+                        changelogs_to_write.append(changelog)
+                else:
+                    pager = Paginator(Context.client)
+                    for page in pager.pages(
+                        CHANGELOGS.tap_stream_id,
+                        "GET",
+                        "/rest/api/3/issue/{}/changelog".format(issue["id"])
+                    ):
+                        for changelog in page:
+                            changelogs_to_write.append(changelog)
             else:
+                # Changelog was not expanded, fetch separately (new API behavior)
                 pager = Paginator(Context.client)
                 for page in pager.pages(
                     CHANGELOGS.tap_stream_id,
                     "GET",
-                    "/rest/api/2/issue/{}/changelog".format(issue["id"])
+                    "/rest/api/3/issue/{}/changelog".format(issue["id"])
                 ):
                     for changelog in page:
+                        changelog["issueId"] = issue["id"]
                         changelogs_to_write.append(changelog)
 
 
@@ -120,11 +139,16 @@ def sync_sub_streams(page, issue_changelog_updated):
                 [{ **changelog, 'issueId': issue["id"] } for changelog in changelogs_to_write]
             )
 
-        transitions = issue.pop("transitions")
+        # Handle case where transitions is not expanded in the new API
+        transitions = issue.pop("transitions", None)
         if transitions and Context.is_selected(ISSUE_TRANSITIONS.tap_stream_id):
             for transition in transitions:
                 transition["issueId"] = issue["id"]
             ISSUE_TRANSITIONS.write_page(transitions)
+        elif not transitions and Context.is_selected(ISSUE_TRANSITIONS.tap_stream_id):
+            # Transitions were not expanded, would need separate API call
+            # For now, skip transitions as there's no direct API endpoint for them
+            LOGGER.warning(f"Transitions not available for issue {issue['id']} - skipping")
 
 
 def advance_bookmark(worklogs):

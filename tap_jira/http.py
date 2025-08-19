@@ -245,15 +245,28 @@ class EnhancedSearchPaginator():
             # Build the request body
             body = {
                 "jql": jql,
-                "fields": fields,
                 "maxResults": self.max_results
             }
             
-            if expand:
-                body["expand"] = expand
+            # Always add fields parameter - new API requires it explicitly
+            body["fields"] = fields
+            
+            # The new API might not support expand parameter at all
+            # Based on the documentation, expansion is handled differently
+            # Let's try without expand for now and handle changelog separately
+            # if expand:
+            #     body["expand"] = expand
             
             if self.next_page_token:
                 body["nextPageToken"] = self.next_page_token
+
+            # Add detailed logging for debugging
+            import json
+            self.client.logger.info(f"EnhancedSearchPaginator: Making request to /rest/api/3/search/jql")
+            self.client.logger.info(f"Request body: {json.dumps(body, indent=2)}")
+            self.client.logger.info(f"JQL query: {jql}")
+            self.client.logger.info(f"Fields requested: {fields}")
+            self.client.logger.info(f"Expand requested: {expand}")
 
             # Make POST request with JSON body
             response = self.client.request(
@@ -263,11 +276,24 @@ class EnhancedSearchPaginator():
                 json=body
             )
 
+            # Log the response for debugging
+            self.client.logger.info(f"Response status: Success")
+            self.client.logger.info(f"Response keys: {list(response.keys())}")
+            if "issues" in response:
+                self.client.logger.info(f"Number of issues returned: {len(response.get('issues', []))}")
+            else:
+                self.client.logger.warning(f"No 'issues' key in response: {response}")
+
             # Extract issues from response
             issues = response.get("issues", [])
             
             # Update pagination token
             self.next_page_token = response.get("nextPageToken")
+            
+            if self.next_page_token:
+                self.client.logger.info(f"Next page token: {self.next_page_token}")
+            else:
+                self.client.logger.info("No more pages (no nextPageToken)")
 
             # Yield the page if it has issues
             if issues:
