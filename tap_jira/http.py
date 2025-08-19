@@ -11,9 +11,7 @@ from singer import metrics
 import backoff
 
 class RateLimitException(Exception):
-    def __init__(self, retry_after=None):
-        super().__init__()
-        self.retry_after = retry_after
+    pass
 
 # Jira OAuth tokens last for 3600 seconds. We set it to 3500 to try to
 # come in under the limit.
@@ -160,7 +158,7 @@ class Client():
             if response.status_code == 429:
                 if attempt >= max_tries - 1:
                     # Final attempt - give up
-                    raise RateLimitException(response.headers.get('Retry-After'))
+                    raise RateLimitException()
                 
                 # Try to get sleep time from Retry-After header
                 retry_after = response.headers.get('Retry-After')
