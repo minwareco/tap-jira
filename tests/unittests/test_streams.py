@@ -14,7 +14,27 @@ class TestLocalizedRequests(unittest.TestCase):
         Context.bookmark = Mock()
         Context.set_bookmark = Mock()
         Context.catalog = Mock()
-        Context.get_catalog_entry = Mock()
+        
+        # Mock the catalog entry structure
+        mock_schema = Mock()
+        mock_schema.properties = {
+            'fields': Mock(properties={})
+        }
+        mock_catalog_entry = Mock()
+        mock_catalog_entry.schema = mock_schema
+        Context.get_catalog_entry = Mock(return_value=mock_catalog_entry)
+        
+        # Mock the client
+        mock_client = Mock()
+        mock_client.request = Mock(return_value=[])  # Return empty list for field requests
+        Context.client = mock_client
+        
+        # Mock the config
+        Context.config = Mock()
+        Context.config.get = Mock(return_value=None)  # Return None for projects config
+        
+        # Mock other Context methods
+        Context.get_projects = Mock(return_value=[])
 
     @patch.object(EnhancedSearchPaginator, 'pages')
     def test_issues_local_timezone_in_request(self, mock_pages):
