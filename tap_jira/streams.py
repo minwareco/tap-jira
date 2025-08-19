@@ -81,37 +81,18 @@ def sync_sub_streams(page, issue_changelog_updated):
             ISSUE_COMMENTS.write_page(comments)
 
         if Context.is_selected(CHANGELOGS.tap_stream_id):
-            changelog_response = issue.pop("changelog", None)
             changelogs_to_write = []
             
-            if changelog_response:
-                # Changelog was expanded in the response (old behavior)
-                changelogs = changelog_response["histories"]
-
-                # when expanding changelogs for an issue, jira returns 100
-                if changelog_response['maxResults'] >= changelog_response['total']:
-                    for changelog in changelogs:
-                        changelogs_to_write.append(changelog)
-                else:
-                    pager = Paginator(Context.client)
-                    for page in pager.pages(
-                        CHANGELOGS.tap_stream_id,
-                        "GET",
-                        "/rest/api/3/issue/{}/changelog".format(issue["id"])
-                    ):
-                        for changelog in page:
-                            changelogs_to_write.append(changelog)
-            else:
-                # Changelog was not expanded, fetch separately (new API behavior)
-                pager = Paginator(Context.client)
-                for page in pager.pages(
-                    CHANGELOGS.tap_stream_id,
-                    "GET",
-                    "/rest/api/3/issue/{}/changelog".format(issue["id"])
-                ):
-                    for changelog in page:
-                        changelog["issueId"] = issue["id"]
-                        changelogs_to_write.append(changelog)
+            # Fetch changelog separately (new API v3 doesn't expand inline)
+            pager = Paginator(Context.client)
+            for page in pager.pages(
+                CHANGELOGS.tap_stream_id,
+                "GET",
+                "/rest/api/3/issue/{}/changelog".format(issue["id"])
+            ):
+                for changelog in page:
+                    changelog["issueId"] = issue["id"]
+                    changelogs_to_write.append(changelog)
 
 
             for changelog in changelogs_to_write:
@@ -134,12 +115,8 @@ def sync_sub_streams(page, issue_changelog_updated):
                 [{ **changelog, 'issueId': issue["id"] } for changelog in changelogs_to_write]
             )
 
-        # Handle case where transitions is not expanded in the new API
-        transitions = issue.pop("transitions", None)
-        if transitions and Context.is_selected(ISSUE_TRANSITIONS.tap_stream_id):
-            for transition in transitions:
-                transition["issueId"] = issue["id"]
-            ISSUE_TRANSITIONS.write_page(transitions)
+        # Note: Transitions are not available via expand in API v3
+        # Would require separate API calls per issue which could be expensive
 
 
 def advance_bookmark(worklogs):
@@ -485,13 +462,13 @@ class Issues(Stream):
         # Now fetch all the actual issues, translating custom fields
         jql = "{} updated >= '{}' order by updated asc".format(projectsJql, start_date).strip()
         
-        # Use the new enhanced search paginator for the deprecated API
+        # Use the new enhanced search paginator for the v3 API
         pager = EnhancedSearchPaginator(Context.client, max_results=100)
         fields = ["*all"]
-        expand = ["changelog", "transitions"]
+        # Note: expand parameter not used as changelog/transitions aren't expandable in v3
 
         page_index = 0
-        for page in pager.pages(self.tap_stream_id, jql, fields=fields, expand=expand):
+        for page in pager.pages(self.tap_stream_id, jql, fields=fields):
 
             LOGGER.info(
                 "Fetched page %d with %d issues for project %s",

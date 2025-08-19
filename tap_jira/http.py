@@ -228,18 +228,15 @@ class EnhancedSearchPaginator():
         self.max_results = max_results
         self.next_page_token = None
 
-    def pages(self, tap_stream_id, jql, fields=None, expand=None):
+    def pages(self, tap_stream_id, jql, fields=None):
         """Returns a generator which yields pages of issues from the enhanced search API.
         
         :param tap_stream_id: Stream ID for metrics
         :param jql: JQL query string
         :param fields: List of fields to return (defaults to ["*all"])
-        :param expand: List of items to expand (e.g., ["changelog", "transitions"])
         """
         if fields is None:
             fields = ["*all"]
-        if expand is None:
-            expand = []
 
         while True:
             # Build the request body
@@ -250,12 +247,6 @@ class EnhancedSearchPaginator():
             
             # Always add fields parameter - new API requires it explicitly
             body["fields"] = fields
-            
-            # The new API might not support expand parameter at all
-            # Based on the documentation, expansion is handled differently
-            # Let's try without expand for now and handle changelog separately
-            # if expand:
-            #     body["expand"] = expand
             
             if self.next_page_token:
                 body["nextPageToken"] = self.next_page_token
