@@ -147,13 +147,9 @@ class TestClient():
             self.login_timer.start()
 
     def test_credentials_are_authorized(self):
-        # Test with the new enhanced search API endpoint
-        body = {
-            "jql": "ORDER BY created DESC",
-            "maxResults": 1,
-            "fields": ["id"]
-        }
-        self.request("issues", "POST", "/rest/api/3/search/jql", json=body)
+        # Assume that everyone has issues, so we try and hit that endpoint
+        self.request("issues", "GET", "/rest/api/2/search",
+                     params={"maxResults": 1})
 
 
 class Paginator():
