@@ -412,7 +412,10 @@ class Issues(Stream):
         except requests.exceptions.HTTPError as http_err:
             # Handle specific 400 errors at the project level
             if http_err.response.status_code == 400 and '/rest/api/3/search/jql' in http_err.response.url:
-                LOGGER.warning(f"Project {project_key_or_id}: Encountered a handled 400 error with Jira search API. This error is being handled as non-fatal. Sync will continue with other projects.")
+                LOGGER.warning(f"Project {project_key_or_id}: Encountered a handled 400 error with Jira search API")
+                LOGGER.warning(f"URL: {http_err.response.url}")
+                LOGGER.warning(f"Response body: {http_err.response.text}")
+                LOGGER.warning(f"This error is being handled as non-fatal. Sync will continue with other projects.")
                 return {"status": "error", "project": project_key_or_id, "error_type": "handled_400"}
             else:
                 # Re-raise other HTTP errors
