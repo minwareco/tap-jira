@@ -1,9 +1,9 @@
 import unittest
 import pytz
 from tap_jira.context import Context
-from unittest.mock import Mock, MagicMock
+from unittest.mock import Mock, MagicMock, patch
 from tap_jira.streams import Issues
-from tap_jira.http import Paginator
+from tap_jira.http import EnhancedSearchPaginator
 from datetime import datetime
 
 class TestLocalizedRequests(unittest.TestCase):
@@ -13,9 +13,13 @@ class TestLocalizedRequests(unittest.TestCase):
         Context.retrieve_timezone = Mock(return_value=self.tzname)
         Context.bookmark = Mock()
         Context.set_bookmark = Mock()
-        Paginator.pages = Mock(return_value=[])
+        Context.catalog = Mock()
+        Context.get_catalog_entry = Mock()
 
-    def test_issues_local_timezone_in_request(self):
+    @patch.object(EnhancedSearchPaginator, 'pages')
+    def test_issues_local_timezone_in_request(self, mock_pages):
+        mock_pages.return_value = iter([])  # Empty iterator for pages
+        
         issues = Issues('issues', ['pk_fields'])
         issues.sync()
 
@@ -23,8 +27,5 @@ class TestLocalizedRequests(unittest.TestCase):
         expected_start_date = (datetime(2018, 12, 12, 1, 2, tzinfo=pytz.UTC)
                                .astimezone(user_tz)
                                .strftime("%Y-%m-%d %H:%M"))
-        params = {"fields": "*all",
-                  "expand": "changelog,transitions",
-                  "validateQuery": "strict",
-                  "jql": "updated >= '{}' order by updated asc".format(expected_start_date)}
-        Paginator.pages.assert_called_once_with('issues','GET','/rest/api/2/search',params=params)
+        expected_jql = "updated >= '{}' order by updated asc".format(expected_start_date)
+        mock_pages.assert_called_once_with('issues', expected_jql, fields=['*all'], expand=['changelog', 'transitions'])

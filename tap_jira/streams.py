@@ -8,7 +8,7 @@ import singer
 import datetime
 
 from singer import metrics, utils, metadata, Transformer, Timer
-from .http import Paginator
+from .http import Paginator, EnhancedSearchPaginator
 from .context import Context
 from itertools import chain
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -419,7 +419,7 @@ class Issues(Stream):
             return {"status": "success", "project": project_key_or_id}
         except requests.exceptions.HTTPError as http_err:
             # Handle specific 400 errors at the project level
-            if http_err.response.status_code == 400 and '/rest/api/2/search' in http_err.response.url:
+            if http_err.response.status_code == 400 and '/rest/api/3/search/jql' in http_err.response.url:
                 LOGGER.warning(f"Project {project_key_or_id}: Encountered a handled 400 error with Jira search API")
                 LOGGER.warning(f"URL: {http_err.response.url}")
                 LOGGER.warning(f"Response body: {http_err.response.text}")
@@ -472,18 +472,14 @@ class Issues(Stream):
 
         # Now fetch all the actual issues, translating custom fields
         jql = "{} updated >= '{}' order by updated asc".format(projectsJql, start_date).strip()
-        params = {"fields": "*all",
-                  "expand": "changelog,transitions",
-                  "validateQuery": "strict",
-                  "maxResults": 100,
-                  "jql": jql}
-        page_num = Context.bookmark(page_num_offset) or 0
-        pager = Paginator(Context.client, items_key="issues", page_num=page_num)
+        
+        # Use the new enhanced search paginator for the deprecated API
+        pager = EnhancedSearchPaginator(Context.client, max_results=100)
+        fields = ["*all"]
+        expand = ["changelog", "transitions"]
 
         page_index = 0
-        for page in pager.pages(self.tap_stream_id,
-                                "GET", "/rest/api/2/search",
-                                params=params):
+        for page in pager.pages(self.tap_stream_id, jql, fields=fields, expand=expand):
 
             LOGGER.info(
                 "Fetched page %d with %d issues for project %s",
@@ -534,8 +530,8 @@ class Issues(Stream):
             LOGGER.info("Writing issues for page %d, project %s...", page_index, project_key_or_id)
             with self.write_lock:
                 self.write_page(page)
-
-                Context.set_bookmark(page_num_offset, pager.next_page_num)
+                # Note: Enhanced search API doesn't use page numbers for bookmarking
+                # Instead we rely on the last_updated timestamp for resuming sync
                 singer.write_state(Context.state)
             
             LOGGER.info("Finished writing issues for page %d, project %s", page_index, project_key_or_id)
@@ -543,7 +539,7 @@ class Issues(Stream):
         
         # After the loop completes
         with self.write_lock:
-            Context.set_bookmark(page_num_offset, None)
+            # Remove page number bookmarking since enhanced API uses tokens
             Context.set_bookmark(updated_bookmark, last_updated)
             Context.set_bookmark(issue_changelogs_updated_bookmark_path, issue_changelogs_sync_time)
             singer.write_state(Context.state)

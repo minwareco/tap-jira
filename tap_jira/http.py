@@ -167,9 +167,13 @@ class Client():
             self.login_timer.start()
 
     def test_credentials_are_authorized(self):
-        # Assume that everyone has issues, so we try and hit that endpoint
-        self.request("issues", "GET", "/rest/api/2/search",
-                     params={"maxResults": 1})
+        # Test with the new enhanced search API endpoint
+        body = {
+            "jql": "ORDER BY created DESC",
+            "maxResults": 1,
+            "fields": ["id"]
+        }
+        self.request("issues", "POST", "/rest/api/3/search/jql", json=body)
 
 
 class Paginator():
@@ -212,3 +216,63 @@ class Paginator():
 
             if page:
                 yield page
+
+
+class EnhancedSearchPaginator():
+    """
+    Specialized paginator for the new Jira enhanced search API (/rest/api/3/search/jql).
+    Uses nextPageToken instead of startAt for pagination and POST requests with JSON bodies.
+    """
+    def __init__(self, client, max_results=100):
+        self.client = client
+        self.max_results = max_results
+        self.next_page_token = None
+
+    def pages(self, tap_stream_id, jql, fields=None, expand=None):
+        """Returns a generator which yields pages of issues from the enhanced search API.
+        
+        :param tap_stream_id: Stream ID for metrics
+        :param jql: JQL query string
+        :param fields: List of fields to return (defaults to ["*all"])
+        :param expand: List of items to expand (e.g., ["changelog", "transitions"])
+        """
+        if fields is None:
+            fields = ["*all"]
+        if expand is None:
+            expand = []
+
+        while True:
+            # Build the request body
+            body = {
+                "jql": jql,
+                "fields": fields,
+                "maxResults": self.max_results
+            }
+            
+            if expand:
+                body["expand"] = expand
+            
+            if self.next_page_token:
+                body["nextPageToken"] = self.next_page_token
+
+            # Make POST request with JSON body
+            response = self.client.request(
+                tap_stream_id, 
+                "POST", 
+                "/rest/api/3/search/jql",
+                json=body
+            )
+
+            # Extract issues from response
+            issues = response.get("issues", [])
+            
+            # Update pagination token
+            self.next_page_token = response.get("nextPageToken")
+
+            # Yield the page if it has issues
+            if issues:
+                yield issues
+
+            # Stop if no more pages
+            if not self.next_page_token:
+                break
