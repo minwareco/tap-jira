@@ -568,7 +568,7 @@ class Issues(Stream):
         else:
             LOGGER.info("Changelogs stream is NOT selected - skipping changelog fetch")
         
-        # Process issues in batches for memory efficiency
+        # Process issues in batches
         LOGGER.info("Processing %d issues in batches for project %s", len(all_issues), project_key_or_id)
         batch_size = 100
         
