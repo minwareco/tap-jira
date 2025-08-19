@@ -6,7 +6,6 @@ from requests.exceptions import HTTPError
 from requests.auth import HTTPBasicAuth
 import requests
 from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 import atlassian_jwt
 from singer import metrics
 import backoff
@@ -285,16 +284,8 @@ class Client():
                 body["nextPageToken"] = next_page_token
             
             page_count += 1
-            self.logger.info(f"Fetching changelog page {page_count} for {len(issue_ids)} issues")
             if page_count == 1:
-                # Only show issue IDs on the first page to avoid repetitive logs
-                if len(issue_ids) <= 10:
-                    self.logger.info(f"Issue IDs: {issue_ids}")
-                else:
-                    self.logger.info(f"Issue ID range: {issue_ids[0]} to {issue_ids[-1]} ({len(issue_ids)} issues total)")
-            
-            # Log request details for investigation
-            self.logger.info(f"Request body: maxResults={body.get('maxResults')}, nextPageToken={body.get('nextPageToken', 'None')}")
+                self.logger.info(f"Fetching changelogs for {len(issue_ids)} issues")
             
             response = self.request(
                 tap_stream_id,
@@ -303,26 +294,13 @@ class Client():
                 json=body
             )
             
-            # Log raw response structure for investigation
-            self.logger.info(f"Raw API response keys: {list(response.keys())}")
-            if "issueChangeLogs" in response:
-                self.logger.info(f"Number of issues with changelogs in response: {len(response['issueChangeLogs'])}")
-            if "nextPageToken" in response:
-                token_preview = str(response["nextPageToken"])[:20] + "..." if len(str(response["nextPageToken"])) > 20 else str(response["nextPageToken"])
-                self.logger.info(f"NextPageToken in response: {token_preview}")
-            
-            
             # Extract changelogs from the bulk response structure
             issue_change_logs = response.get("issueChangeLogs", [])
             all_changelogs = []
             
-            # Log detailed breakdown for investigation
-            issues_with_changelogs = []
             for issue_changelog in issue_change_logs:
                 issue_id = issue_changelog.get("issueId")
                 change_histories = issue_changelog.get("changeHistories", [])
-                if change_histories:
-                    issues_with_changelogs.append(f"{issue_id}({len(change_histories)})")
                 
                 # Add issueId to each changelog entry for consistency with existing format
                 for changelog in change_histories:
@@ -336,23 +314,9 @@ class Client():
                     
                     all_changelogs.append(changelog)
             
-            # Log which issues returned changelogs and how many
-            if issues_with_changelogs:
-                self.logger.info(f"Issues with changelogs this page: {', '.join(issues_with_changelogs)}")
-            else:
-                self.logger.info("No issues returned changelogs this page")
-                
-            # Log first and last changelog IDs to track progression
             if all_changelogs:
-                first_id = all_changelogs[0].get("id", "unknown")
-                last_id = all_changelogs[-1].get("id", "unknown") 
-                self.logger.info(f"Changelog ID range: {first_id} to {last_id}")
-            
-            if all_changelogs:
-                self.logger.info(f"Page {page_count}: Found {len(all_changelogs)} changelogs from {len(issue_change_logs)} issues")
+                self.logger.info(f"Found {len(all_changelogs)} changelogs from {len(issue_change_logs)} issues in page {page_count}")
                 yield all_changelogs
-            else:
-                self.logger.warning(f"Page {page_count}: No changelogs found in response")
             
             # Check for next page - break if no nextPageToken or if it's the same as previous
             new_next_page_token = response.get("nextPageToken")
@@ -361,9 +325,6 @@ class Client():
                 break
             
             next_page_token = new_next_page_token
-            # Only log token details if we need debugging (can be removed later)
-            if page_count % 10 == 0:  # Log every 10th page to reduce noise
-                self.logger.debug(f"Continuing to page {page_count + 1} with token: {next_page_token[:20]}..." if len(str(next_page_token)) > 20 else f"Continuing to page {page_count + 1} with token: {next_page_token}")
 
 
 class Paginator():
@@ -454,24 +415,11 @@ class EnhancedSearchPaginator():
                 json=body
             )
 
-            # Log the response for debugging
-            self.client.logger.info(f"Response status: Success")
-            self.client.logger.info(f"Response keys: {list(response.keys())}")
-            if "issues" in response:
-                self.client.logger.info(f"Number of issues returned: {len(response.get('issues', []))}")
-            else:
-                self.client.logger.warning(f"No 'issues' key in response: {response}")
-
             # Extract issues from response
             issues = response.get("issues", [])
             
             # Update pagination token
             self.next_page_token = response.get("nextPageToken")
-            
-            if self.next_page_token:
-                self.client.logger.info(f"Next page token: {self.next_page_token}")
-            else:
-                self.client.logger.info("No more pages (no nextPageToken)")
 
             # Yield the page if it has issues
             if issues:
