@@ -74,11 +74,6 @@ def should_exclude_field(field_id, field_name):
 
 def sync_sub_streams(page, issue_changelog_updated):
     for issue in page:
-        # Add logging to debug issue structure
-        LOGGER.info(f"Issue keys: {list(issue.keys())}")
-        if "fields" not in issue:
-            LOGGER.warning(f"No 'fields' key found in issue. Issue structure: {issue}")
-            continue
         comments = issue["fields"].pop("comment")["comments"]
         if comments and Context.is_selected(ISSUE_COMMENTS.tap_stream_id):
             for comment in comments:
@@ -145,10 +140,6 @@ def sync_sub_streams(page, issue_changelog_updated):
             for transition in transitions:
                 transition["issueId"] = issue["id"]
             ISSUE_TRANSITIONS.write_page(transitions)
-        elif not transitions and Context.is_selected(ISSUE_TRANSITIONS.tap_stream_id):
-            # Transitions were not expanded, would need separate API call
-            # For now, skip transitions as there's no direct API endpoint for them
-            LOGGER.warning(f"Transitions not available for issue {issue['id']} - skipping")
 
 
 def advance_bookmark(worklogs):
@@ -444,10 +435,7 @@ class Issues(Stream):
         except requests.exceptions.HTTPError as http_err:
             # Handle specific 400 errors at the project level
             if http_err.response.status_code == 400 and '/rest/api/3/search/jql' in http_err.response.url:
-                LOGGER.warning(f"Project {project_key_or_id}: Encountered a handled 400 error with Jira search API")
-                LOGGER.warning(f"URL: {http_err.response.url}")
-                LOGGER.warning(f"Response body: {http_err.response.text}")
-                LOGGER.warning(f"This error is being handled as non-fatal. Sync will continue with other projects.")
+                LOGGER.warning(f"Project {project_key_or_id}: Encountered a handled 400 error with Jira search API. This error is being handled as non-fatal. Sync will continue with other projects.")
                 return {"status": "error", "project": project_key_or_id, "error_type": "handled_400"}
             else:
                 # Re-raise other HTTP errors
