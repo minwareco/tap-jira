@@ -87,52 +87,84 @@ def bulk_fetch_issues_parallel(client, tap_stream_id, issue_ids, fields=None, ma
     LOGGER.info(f"Memory growth during parallel fetch: {memory_growth:.1f} MB")
     return all_issues
 
-def bulk_fetch_changelogs_for_issues(client, tap_stream_id, issue_ids):
+def bulk_fetch_and_write_changelogs(client, tap_stream_id, issue_ids, issues_map):
     """
-    Bulk fetch changelogs for a list of issues using the bulk changelog API.
-    
+    Bulk fetch changelogs and write them immediately without accumulating in memory.
+
     :param client: Jira client instance
     :param tap_stream_id: Stream ID for metrics
     :param issue_ids: List of issue IDs to fetch changelogs for
-    :return: Dictionary mapping issue_id to list of changelogs
+    :param issues_map: Dictionary mapping issue_id to issue data for field exclusion
+    :return: Total number of changelogs processed
     """
     if not issue_ids:
-        return {}
-    
+        return 0
+
     # Monitor memory before changelog fetching
     initial_memory_mb = log_memory("Memory before changelog fetch")
-    
-    changelog_map = {}
+
     total_changelogs = 0
-    
+
     # Process in batches of 1000 (API limit)
     for batch_index, batch in enumerate(partition_list(issue_ids, 1000)):
         LOGGER.info(f"Bulk fetching changelogs for batch {batch_index} ({len(batch)} issues)")
-        
+
         batch_changelogs = 0
+        # Temporary buffer for a single API page
+        page_buffer = {}
+
         for changelog_page in client.bulk_fetch_changelogs(tap_stream_id, batch):
             for changelog in changelog_page:
                 issue_id = changelog.get("issueId")
                 if issue_id:
                     # Ensure consistent string type for issue ID
                     issue_id_str = str(issue_id)
-                    if issue_id_str not in changelog_map:
-                        changelog_map[issue_id_str] = []
-                    changelog_map[issue_id_str].append(changelog)
+                    if issue_id_str not in page_buffer:
+                        page_buffer[issue_id_str] = []
+                    page_buffer[issue_id_str].append(changelog)
                     batch_changelogs += 1
                 else:
                     LOGGER.warning(f"Changelog missing issueId: {changelog.keys()}")
-        
+
+            # Write the page buffer immediately and clear it
+            if page_buffer:
+                write_changelogs_from_buffer(page_buffer)
+                page_buffer.clear()
+
         total_changelogs += batch_changelogs
         # Monitor memory after each batch
-        log_memory(f"After changelog batch {batch_index}: {batch_changelogs} changelogs fetched")
-    
+        log_memory(f"After changelog batch {batch_index}: {batch_changelogs} changelogs written")
+
     # Final memory report
-    final_memory_mb = log_memory(f"Bulk fetched {total_changelogs} changelogs for {len(changelog_map)} issues")
+    final_memory_mb = log_memory(f"Bulk processed {total_changelogs} changelogs")
     memory_growth = final_memory_mb - initial_memory_mb
-    LOGGER.info(f"Memory growth during changelog fetch: {memory_growth:.1f} MB")
-    
-    return changelog_map
+    LOGGER.info(f"Memory growth during changelog processing: {memory_growth:.1f} MB")
+
+    return total_changelogs
+
+def write_changelogs_from_buffer(changelog_buffer):
+    """Write changelogs from buffer immediately."""
+    for issue_id, changelogs_to_write in changelog_buffer.items():
+        # Process and redact sensitive fields
+        for changelog in changelogs_to_write:
+            changelog["issueId"] = issue_id
+            changelog_items = []
+            for item in changelog.get('items', []):
+                if 'fieldId' in item and should_exclude_field(item['fieldId'], item.get('field', '')):
+                    if 'from' in item and item['from'] is not None and item['from'] != '':
+                        item['from'] = '<REDACTED>'
+                    if 'fromString' in item and item['fromString'] is not None and item['fromString'] != '':
+                        item['fromString'] = '<REDACTED>'
+                    if 'to' in item and item['to'] is not None and item['to'] != '':
+                        item['to'] = '<REDACTED>'
+                    if 'toString' in item and item['toString'] is not None and item['toString'] != '':
+                        item['toString'] = '<REDACTED>'
+                changelog_items.append(item)
+            changelog['items'] = changelog_items
+
+        # Write changelogs immediately
+        CHANGELOGS.write_page(changelogs_to_write)
+
 
 def raise_if_bookmark_cannot_advance(worklogs):
     # Worklogs can only be queried with a `since` timestamp and
@@ -190,55 +222,19 @@ def should_exclude_field(field_id, field_name):
     return False
 
 def sync_sub_streams(page, issue_changelog_updated, changelog_map=None):
+    """Process sub-streams for a page of issues.
+
+    :param page: List of issues to process
+    :param issue_changelog_updated: Timestamp for changelog updates
+    :param changelog_map: Deprecated - changelogs are now processed separately
+    """
+    # Only process comments - changelogs are handled separately via bulk_fetch_and_write_changelogs
     for issue in page:
         comments = issue["fields"].pop("comment")["comments"]
         if comments and Context.is_selected(ISSUE_COMMENTS.tap_stream_id):
             for comment in comments:
                 comment["issueId"] = issue["id"]
             ISSUE_COMMENTS.write_page(comments)
-
-        if Context.is_selected(CHANGELOGS.tap_stream_id):
-            changelogs_to_write = []
-            issue_id = str(issue["id"])  # Ensure consistent string type
-            
-            # Use bulk-fetched changelog data
-            if changelog_map is not None and issue_id in changelog_map:
-                changelogs_to_write = changelog_map[issue_id]
-                # Ensure issueId is set on each changelog
-                for changelog in changelogs_to_write:
-                    changelog["issueId"] = issue_id
-            elif changelog_map is not None:
-                # No changelogs found for this issue (empty list)
-                changelogs_to_write = []
-            else:
-                # This should not happen since we always bulk fetch if changelogs are selected
-                raise Exception(f"Changelog map is None but changelogs are selected for issue {issue_id}")
-
-
-            for changelog in changelogs_to_write:
-                changelog_items = []
-                for item in changelog['items']:
-                    if 'fieldId' in item and should_exclude_field(item['fieldId'], item['field']):
-                        if 'from' in item and item['from'] is not None and item['from'] != '':
-                            item['from'] = '<REDACTED>'
-                        if 'fromString' in item and item['fromString'] is not None and item['fromString'] != '':
-                            item['fromString'] = '<REDACTED>'
-                        if 'to' in item and item['to'] is not None and item['to'] != '':
-                            item['to'] = '<REDACTED>'
-                        if 'toString' in item and item['toString'] is not None and item['toString'] != '':
-                            item['toString'] = '<REDACTED>'
-                        
-                    changelog_items.append(item)
-                changelog['items'] = changelog_items
-
-            CHANGELOGS.write_page(
-                [{ **changelog, 'issueId': issue["id"] } for changelog in changelogs_to_write]
-            )
-            
-            # Monitor memory after processing large changelog sets
-            if len(changelogs_to_write) > 100:
-                log_memory("Memory after %d changelogs for issue %s", 
-                          len(changelogs_to_write), issue["id"])
 
         # Note: Transitions are not available via expand in API v3
         # We will need to fetch them separately if they are needed
@@ -640,11 +636,11 @@ class Issues(Stream):
             
             LOGGER.info("Batch %d: Restored chronological order for %d issues", batch_index, len(ordered_batch_issues))
             
-            # Fetch changelogs for this batch if needed
-            changelog_map = None
+            # Process changelogs for this batch if needed
             if Context.is_selected(CHANGELOGS.tap_stream_id):
-                LOGGER.info("Fetching changelogs for batch %d (%d issues)", batch_index, len(batch_ids))
-                changelog_map = bulk_fetch_changelogs_for_issues(Context.client, CHANGELOGS.tap_stream_id, batch_ids)
+                LOGGER.info("Processing changelogs for batch %d (%d issues)", batch_index, len(batch_ids))
+                # Process and write changelogs immediately without holding in memory
+                bulk_fetch_and_write_changelogs(Context.client, CHANGELOGS.tap_stream_id, batch_ids, id_to_issue)
             
             # Process batch in smaller sub-batches for writing (maintaining JQL order)
             for sub_batch_index, sub_batch_start in enumerate(range(0, len(ordered_batch_issues), sub_batch_size)):
@@ -654,8 +650,8 @@ class Issues(Stream):
                 LOGGER.info("Processing sub-batch %d (%d-%d) with %d issues from batch %d", 
                            sub_batch_index, sub_batch_start, sub_batch_end-1, len(issue_batch), batch_index)
                 
-                # sync comments and changelogs for each issue
-                sync_sub_streams(issue_batch, issue_changelogs_updated, changelog_map)
+                # sync comments for each issue (changelogs already processed)
+                sync_sub_streams(issue_batch, issue_changelogs_updated, None)
                 
                 for issue in issue_batch:
                     issue['fields'].pop('worklog', None)
@@ -716,8 +712,6 @@ class Issues(Stream):
             # Batch complete - clear variables to help with memory cleanup
             log_memory("Memory at end of batch %d (should decrease on next batch)", batch_index)
             del ordered_batch_issues
-            if changelog_map:
-                del changelog_map
         
         # All batches complete - final state update
         LOGGER.info("All ordered batches complete for project %s", project_key_or_id)
