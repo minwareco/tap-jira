@@ -128,56 +128,51 @@ class Client():
     @backoff.on_exception(backoff.expo,
                           (requests.exceptions.ConnectionError,
                            requests.exceptions.ChunkedEncodingError,
-                           HTTPError),
+                           HTTPError,
+                           RateLimitException),
                           jitter=None,
                           max_tries=10,
                           giveup=lambda e: isinstance(e, HTTPError) and
                                           e.response is not None and
                                           not (500 <= e.response.status_code < 600))
     def request(self, tap_stream_id, *args, **kwargs):
-        max_tries = 10
+        # Honor rate limiting delay
+        wait = (self.next_request_at - datetime.now()).total_seconds()
+        if wait > 0:
+            time.sleep(wait)
 
-        for attempt in range(max_tries):
-            # Honor rate limiting delay
-            wait = (self.next_request_at - datetime.now()).total_seconds()
-            if wait > 0:
-                time.sleep(wait)
+        # Make the request
+        with metrics.http_request_timer(tap_stream_id) as timer:
+            response = self.send(*args, **kwargs)
+            self.next_request_at = datetime.now() + TIME_BETWEEN_REQUESTS
+            timer.tags[metrics.Tag.http_status_code] = response.status_code
 
-            # Make the request
-            with metrics.http_request_timer(tap_stream_id) as timer:
-                response = self.send(*args, **kwargs)
-                self.next_request_at = datetime.now() + TIME_BETWEEN_REQUESTS
-                timer.tags[metrics.Tag.http_status_code] = response.status_code
+        # Handle rate limiting (429) with custom logic
+        if response.status_code == 429:
+            # Try to get sleep time from Retry-After header
+            retry_after = response.headers.get('Retry-After')
+            if retry_after:
+                try:
+                    sleep_seconds = int(retry_after)
+                    self.logger.info(f"Rate limited. Waiting {sleep_seconds}s as per Retry-After header")
+                except (ValueError, TypeError):
+                    sleep_seconds = 60  # Default fallback
+                    self.logger.info(f"Rate limited. Invalid Retry-After header, waiting {sleep_seconds}s")
+            else:
+                sleep_seconds = 60  # Default wait time
+                self.logger.info(f"Rate limited. No Retry-After header, waiting {sleep_seconds}s")
 
-            # Handle rate limiting (429) with custom logic
-            if response.status_code == 429:
-                if attempt >= max_tries - 1:
-                    # Final attempt - give up
-                    raise RateLimitException()
+            time.sleep(sleep_seconds)
+            # Raise exception to trigger backoff decorator retry
+            raise RateLimitException()
 
-                # Try to get sleep time from Retry-After header
-                retry_after = response.headers.get('Retry-After')
-                if retry_after:
-                    try:
-                        sleep_seconds = int(retry_after)
-                        self.logger.info(f"Rate limited. Waiting {sleep_seconds}s as per Retry-After header (attempt {attempt + 1}/{max_tries})")
-                    except (ValueError, TypeError):
-                        sleep_seconds = 60 * (2 ** attempt)  # Exponential backoff fallback
-                        self.logger.info(f"Rate limited. Invalid Retry-After header, using exponential backoff: {sleep_seconds}s (attempt {attempt + 1}/{max_tries})")
-                else:
-                    sleep_seconds = 60 * (2 ** attempt)  # Exponential backoff
-                    self.logger.info(f"Rate limited. Using exponential backoff: {sleep_seconds}s (attempt {attempt + 1}/{max_tries})")
+        # Log error responses for debugging
+        if response.text and response.status_code >= 400:
+            self.logger.warn('Response body: {}'.format(response.text))
 
-                time.sleep(sleep_seconds)
-                continue
-
-            # Log error responses for debugging
-            if response.text and response.status_code >= 400:
-                self.logger.warn('Response body: {}'.format(response.text))
-
-            # Raise for any HTTP errors (backoff decorator will handle 5xx retries)
-            response.raise_for_status()
-            return response.json()
+        # Raise for any HTTP errors (backoff decorator will handle 5xx retries)
+        response.raise_for_status()
+        return response.json()
 
     def refresh_credentials(self):
         body = {"grant_type": "refresh_token",
