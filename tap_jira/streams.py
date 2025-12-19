@@ -41,6 +41,23 @@ def partition_list(lst, batch_size):
         yield lst[i:i + batch_size]
 
 
+def generate_date_chunks(start_date, end_date, chunk_size_days=365):
+    """
+    Generate date chunks for processing large time ranges.
+
+    :param start_date: Start date (datetime)
+    :param end_date: End date (datetime)
+    :param chunk_size_days: Size of each chunk in days
+    :yield: Tuples of (chunk_start, chunk_end, chunk_end_ts)
+    """
+    chunk_start = start_date
+    while chunk_start < end_date:
+        chunk_end = min(chunk_start + datetime.timedelta(days=chunk_size_days), end_date)
+        chunk_end_ts = int(chunk_end.timestamp()) * 1000
+        yield chunk_start, chunk_end, chunk_end_ts
+        chunk_start = chunk_end
+
+
 def bulk_fetch_issues_parallel(client, tap_stream_id, issue_ids, fields=None, max_workers=10):
     """
     Fetch issue details in parallel using bulk fetch API.
@@ -736,14 +753,20 @@ class Issues(Stream):
 
 
 class Worklogs(Stream):
-    def _fetch_ids(self, last_updated):
+    def _fetch_ids(self, last_updated, until_ts=None):
         # since_ts uses millisecond precision
         since_ts = int(last_updated.timestamp()) * 1000
+        params = {"since": since_ts}
+
+        # Add until parameter if specified (for chunking)
+        if until_ts is not None:
+            params["until"] = until_ts
+
         return Context.client.request(
             self.tap_stream_id,
             "GET",
             "/rest/api/2/worklog/updated",
-            params={"since": since_ts},
+            params=params,
         )
 
     def _fetch_worklogs(self, ids):
@@ -755,62 +778,116 @@ class Worklogs(Stream):
             data=json.dumps({"ids": ids}),
         )
 
+    def _process_worklog_page(self, last_updated, updated_bookmark, until_ts=None):
+        """
+        Process a single page of worklogs.
+        Returns the new last_updated value and whether this was the last page.
+        """
+        ids_page = self._fetch_ids(last_updated, until_ts=until_ts)
+        if not ids_page["values"]:
+            return last_updated, True
+
+        ids = [x["worklogId"] for x in ids_page["values"]]
+        worklogs = self._fetch_worklogs(ids)
+
+        # Grab last_updated before transform in write_page
+        new_last_updated = advance_bookmark(worklogs)
+
+        self.write_page(worklogs)
+        Context.set_bookmark(updated_bookmark, new_last_updated)
+        singer.write_state(Context.state)
+
+        last_page = ids_page.get("lastPage", False)
+        return new_last_updated, last_page
+
     def sync(self):
         updated_bookmark = [self.tap_stream_id, "updated"]
         last_updated = Context.update_start_date_bookmark(updated_bookmark)
-        while True:
-            ids_page = self._fetch_ids(last_updated)
-            if not ids_page["values"]:
-                break
-            ids = [x["worklogId"] for x in ids_page["values"]]
-            worklogs = self._fetch_worklogs(ids)
+        now = datetime.datetime.now(pytz.UTC)
+        time_diff = now - last_updated
 
-            # Grab last_updated before transform in write_page
-            new_last_updated = advance_bookmark(worklogs)
+        # Check if we need chunking (more than 1 year of data)
+        if time_diff.days > 365:
+            LOGGER.info(f"Large time range detected ({time_diff.days} days). Using chunked requests with 1-year chunks")
 
-            self.write_page(worklogs)
+            for chunk_start, chunk_end, chunk_end_ts in generate_date_chunks(last_updated, now):
+                LOGGER.info(f"Processing worklog chunk: {chunk_start.isoformat()} to {chunk_end.isoformat()}")
 
-            last_updated = new_last_updated
-            Context.set_bookmark(updated_bookmark, last_updated)
-            singer.write_state(Context.state)
-            # lastPage is a boolean value based on
-            # https://developer.atlassian.com/cloud/jira/platform/rest/v3/?utm_source=%2Fcloud%2Fjira%2Fplatform%2Frest%2F&utm_medium=302#api-api-3-worklog-updated-get
-            last_page = ids_page.get("lastPage")
-            if last_page:
-                break
+                # Process all pages in this chunk
+                chunk_last_updated = chunk_start
+                while True:
+                    chunk_last_updated, is_last_page = self._process_worklog_page(
+                        chunk_last_updated, updated_bookmark, until_ts=chunk_end_ts
+                    )
+                    if is_last_page:
+                        break
+
+                last_updated = chunk_last_updated
+        else:
+            # Process without chunking for smaller time ranges
+            while True:
+                last_updated, is_last_page = self._process_worklog_page(last_updated, updated_bookmark)
+                if is_last_page:
+                    break
 
 
 class WorklogsDeleted(Stream):
+    def _process_deleted_page(self, since_ts, updated_bookmark, until_ts=None):
+        """
+        Process a single page of deleted worklogs.
+        Returns the next since_ts value or None if done.
+        """
+        params = {"since": since_ts}
+        if until_ts is not None:
+            params["until"] = until_ts
+
+        records_page = Context.client.request(
+            self.tap_stream_id,
+            "GET",
+            "/rest/api/2/worklog/deleted",
+            params=params,
+        )
+
+        if not records_page.get("values"):
+            return None
+
+        self.write_page(records_page.get("values"))
+
+        # Store bookmark in ISO-8601 format
+        max_updated_time = (records_page.get("until") / 1000)
+        last_updated = datetime.datetime.utcfromtimestamp(max_updated_time).isoformat() + "Z"
+        Context.set_bookmark(updated_bookmark, last_updated)
+        singer.write_state(Context.state)
+
+        # Check if we're done
+        last_page = records_page.get("lastPage")
+        if last_page or (until_ts and records_page.get("until") >= until_ts):
+            return None
+
+        return records_page.get("until")
+
     def sync(self):
         updated_bookmark = [self.tap_stream_id, "updated"]
         last_updated = Context.update_start_date_bookmark(updated_bookmark)
-        since_ts = int(last_updated.timestamp()) * 1000
-        while since_ts is not None:
-            records_page = Context.client.request(
-                self.tap_stream_id,
-                "GET",
-                "/rest/api/2/worklog/deleted",
-                params={"since": since_ts},
-            )
+        now = datetime.datetime.now(pytz.UTC)
+        time_diff = now - last_updated
 
-            if not records_page.get("values"):
-                break
+        # Check if we need chunking (more than 1 year of data)
+        if time_diff.days > 365:
+            LOGGER.info(f"Large time range detected for deleted worklogs ({time_diff.days} days). Using chunked requests with 1-year chunks")
 
-            self.write_page(records_page.get("values"))
+            for chunk_start, chunk_end, chunk_end_ts in generate_date_chunks(last_updated, now):
+                LOGGER.info(f"Processing deleted worklog chunk: {chunk_start.isoformat()} to {chunk_end.isoformat()}")
 
-            # store bookmark in ISO-8601 format, which requires conversion from the Unix timestamp
-            # that the worklog records have
-            max_updated_time = (records_page.get("until") / 1000)
-            last_updated = datetime.datetime.utcfromtimestamp(max_updated_time).isoformat() + "Z"
-            Context.set_bookmark(updated_bookmark, last_updated)
-            singer.write_state(Context.state)
-            # lastPage is a boolean value based on
-            # https://developer.atlassian.com/cloud/jira/platform/rest/v3/?utm_source=%2Fcloud%2Fjira%2Fplatform%2Frest%2F&utm_medium=302#api-api-3-worklog-updated-get
-            last_page = records_page.get("lastPage")
-            if last_page:
-                break
-
-            since_ts = records_page.get("until")
+                # Process all pages in this chunk
+                since_ts = int(chunk_start.timestamp()) * 1000
+                while since_ts is not None and since_ts < chunk_end_ts:
+                    since_ts = self._process_deleted_page(since_ts, updated_bookmark, until_ts=chunk_end_ts)
+        else:
+            # Process without chunking for smaller time ranges
+            since_ts = int(last_updated.timestamp()) * 1000
+            while since_ts is not None:
+                since_ts = self._process_deleted_page(since_ts, updated_bookmark)
 
 VERSIONS = Stream("versions", ["id"], indirect_stream=True)
 COMPONENTS = Stream("components", ["id"], indirect_stream=True)
