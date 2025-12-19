@@ -41,23 +41,6 @@ def partition_list(lst, batch_size):
         yield lst[i:i + batch_size]
 
 
-def generate_date_chunks(start_date, end_date, chunk_size_days=30):
-    """
-    Generate date chunks for processing large time ranges.
-
-    :param start_date: Start date (datetime)
-    :param end_date: End date (datetime)
-    :param chunk_size_days: Size of each chunk in days (default: 30)
-    :yield: Tuples of (chunk_start, chunk_end, chunk_end_ts)
-    """
-    chunk_start = start_date
-    while chunk_start < end_date:
-        chunk_end = min(chunk_start + datetime.timedelta(days=chunk_size_days), end_date)
-        chunk_end_ts = int(chunk_end.timestamp()) * 1000
-        yield chunk_start, chunk_end, chunk_end_ts
-        chunk_start = chunk_end
-
-
 def bulk_fetch_issues_parallel(client, tap_stream_id, issue_ids, fields=None, max_workers=10):
     """
     Fetch issue details in parallel using bulk fetch API.
@@ -762,6 +745,14 @@ class Worklogs(Stream):
         if until_ts is not None:
             params["until"] = until_ts
 
+        # Log the request details
+        from_date = datetime.datetime.fromtimestamp(since_ts / 1000).isoformat()
+        if until_ts:
+            to_date = datetime.datetime.fromtimestamp(until_ts / 1000).isoformat()
+            LOGGER.info(f"Fetching worklog IDs from {from_date} to {to_date} (params: {params})")
+        else:
+            LOGGER.info(f"Fetching worklog IDs from {from_date} (params: {params})")
+
         return Context.client.request(
             self.tap_stream_id,
             "GET",
@@ -804,41 +795,22 @@ class Worklogs(Stream):
         updated_bookmark = [self.tap_stream_id, "updated"]
         last_updated = Context.update_start_date_bookmark(updated_bookmark)
         now = datetime.datetime.now(pytz.UTC)
+
+        # Limit to 3 years of data to avoid timeouts
+        three_years_ago = now - datetime.timedelta(days=365 * 3)
+        if last_updated < three_years_ago:
+            LOGGER.info(f"Limiting worklog sync to 3 years. Original date: {last_updated.isoformat()}, new date: {three_years_ago.isoformat()}")
+            last_updated = three_years_ago
+            Context.set_bookmark(updated_bookmark, last_updated)
+            singer.write_state(Context.state)
+
         time_diff = now - last_updated
+        LOGGER.info(f"Processing {time_diff.days} days of worklog data")
 
-        # Always use chunking to avoid 504 errors
-        if time_diff.days > 30:
-            LOGGER.info(f"Processing {time_diff.days} days of worklog data. Using 30-day chunks.")
-
-            for chunk_start, chunk_end, chunk_end_ts in generate_date_chunks(last_updated, now):
-                LOGGER.info(f"Processing worklog chunk: {chunk_start.isoformat()} to {chunk_end.isoformat()}")
-
-                # Process all pages in this chunk
-                chunk_last_updated = chunk_start
-                while True:
-                    try:
-                        chunk_last_updated, is_last_page = self._process_worklog_page(
-                            chunk_last_updated, updated_bookmark, until_ts=chunk_end_ts
-                        )
-                        if is_last_page:
-                            break
-                    except requests.exceptions.HTTPError as e:
-                        if e.response and e.response.status_code == 504:
-                            # If we get a 504 even with chunking, log it and try to continue
-                            LOGGER.warning(f"Got 504 error for chunk {chunk_start.isoformat()} to {chunk_end.isoformat()}. This chunk may be too large.")
-                            # Move to next chunk to avoid getting stuck
-                            break
-                        else:
-                            raise
-
-                last_updated = chunk_last_updated
-        else:
-            # Process without chunking for very small time ranges
-            LOGGER.info(f"Processing {time_diff.days} days of worklog data without chunking")
-            while True:
-                last_updated, is_last_page = self._process_worklog_page(last_updated, updated_bookmark)
-                if is_last_page:
-                    break
+        while True:
+            last_updated, is_last_page = self._process_worklog_page(last_updated, updated_bookmark)
+            if is_last_page:
+                break
 
 
 class WorklogsDeleted(Stream):
@@ -850,6 +822,14 @@ class WorklogsDeleted(Stream):
         params = {"since": since_ts}
         if until_ts is not None:
             params["until"] = until_ts
+
+        # Log the request details
+        from_date = datetime.datetime.fromtimestamp(since_ts / 1000).isoformat()
+        if until_ts:
+            to_date = datetime.datetime.fromtimestamp(until_ts / 1000).isoformat()
+            LOGGER.info(f"Fetching deleted worklogs from {from_date} to {to_date} (params: {params})")
+        else:
+            LOGGER.info(f"Fetching deleted worklogs from {from_date} (params: {params})")
 
         records_page = Context.client.request(
             self.tap_stream_id,
@@ -880,34 +860,21 @@ class WorklogsDeleted(Stream):
         updated_bookmark = [self.tap_stream_id, "updated"]
         last_updated = Context.update_start_date_bookmark(updated_bookmark)
         now = datetime.datetime.now(pytz.UTC)
+
+        # Limit to 3 years of data to avoid timeouts
+        three_years_ago = now - datetime.timedelta(days=365 * 3)
+        if last_updated < three_years_ago:
+            LOGGER.info(f"Limiting deleted worklog sync to 3 years. Original date: {last_updated.isoformat()}, new date: {three_years_ago.isoformat()}")
+            last_updated = three_years_ago
+            Context.set_bookmark(updated_bookmark, last_updated)
+            singer.write_state(Context.state)
+
         time_diff = now - last_updated
+        LOGGER.info(f"Processing {time_diff.days} days of deleted worklog data")
 
-        # Always use chunking to avoid 504 errors
-        if time_diff.days > 30:
-            LOGGER.info(f"Processing {time_diff.days} days of deleted worklog data. Using 30-day chunks.")
-
-            for chunk_start, chunk_end, chunk_end_ts in generate_date_chunks(last_updated, now):
-                LOGGER.info(f"Processing deleted worklog chunk: {chunk_start.isoformat()} to {chunk_end.isoformat()}")
-
-                # Process all pages in this chunk
-                since_ts = int(chunk_start.timestamp()) * 1000
-                while since_ts is not None and since_ts < chunk_end_ts:
-                    try:
-                        since_ts = self._process_deleted_page(since_ts, updated_bookmark, until_ts=chunk_end_ts)
-                    except requests.exceptions.HTTPError as e:
-                        if e.response and e.response.status_code == 504:
-                            # If we get a 504 even with chunking, log it and try to continue
-                            LOGGER.warning(f"Got 504 error for deleted chunk {chunk_start.isoformat()} to {chunk_end.isoformat()}. This chunk may be too large.")
-                            # Move to next chunk to avoid getting stuck
-                            break
-                        else:
-                            raise
-        else:
-            # Process without chunking for very small time ranges
-            LOGGER.info(f"Processing {time_diff.days} days of deleted worklog data without chunking")
-            since_ts = int(last_updated.timestamp()) * 1000
-            while since_ts is not None:
-                since_ts = self._process_deleted_page(since_ts, updated_bookmark)
+        since_ts = int(last_updated.timestamp()) * 1000
+        while since_ts is not None:
+            since_ts = self._process_deleted_page(since_ts, updated_bookmark)
 
 VERSIONS = Stream("versions", ["id"], indirect_stream=True)
 COMPONENTS = Stream("components", ["id"], indirect_stream=True)
