@@ -41,13 +41,13 @@ def partition_list(lst, batch_size):
         yield lst[i:i + batch_size]
 
 
-def generate_date_chunks(start_date, end_date, chunk_size_days=365):
+def generate_date_chunks(start_date, end_date, chunk_size_days=30):
     """
     Generate date chunks for processing large time ranges.
 
     :param start_date: Start date (datetime)
     :param end_date: End date (datetime)
-    :param chunk_size_days: Size of each chunk in days
+    :param chunk_size_days: Size of each chunk in days (default: 30)
     :yield: Tuples of (chunk_start, chunk_end, chunk_end_ts)
     """
     chunk_start = start_date
@@ -806,9 +806,9 @@ class Worklogs(Stream):
         now = datetime.datetime.now(pytz.UTC)
         time_diff = now - last_updated
 
-        # Check if we need chunking (more than 1 year of data)
-        if time_diff.days > 365:
-            LOGGER.info(f"Large time range detected ({time_diff.days} days). Using chunked requests with 1-year chunks")
+        # Always use chunking to avoid 504 errors
+        if time_diff.days > 30:
+            LOGGER.info(f"Processing {time_diff.days} days of worklog data. Using 30-day chunks.")
 
             for chunk_start, chunk_end, chunk_end_ts in generate_date_chunks(last_updated, now):
                 LOGGER.info(f"Processing worklog chunk: {chunk_start.isoformat()} to {chunk_end.isoformat()}")
@@ -816,15 +816,25 @@ class Worklogs(Stream):
                 # Process all pages in this chunk
                 chunk_last_updated = chunk_start
                 while True:
-                    chunk_last_updated, is_last_page = self._process_worklog_page(
-                        chunk_last_updated, updated_bookmark, until_ts=chunk_end_ts
-                    )
-                    if is_last_page:
-                        break
+                    try:
+                        chunk_last_updated, is_last_page = self._process_worklog_page(
+                            chunk_last_updated, updated_bookmark, until_ts=chunk_end_ts
+                        )
+                        if is_last_page:
+                            break
+                    except requests.exceptions.HTTPError as e:
+                        if e.response and e.response.status_code == 504:
+                            # If we get a 504 even with chunking, log it and try to continue
+                            LOGGER.warning(f"Got 504 error for chunk {chunk_start.isoformat()} to {chunk_end.isoformat()}. This chunk may be too large.")
+                            # Move to next chunk to avoid getting stuck
+                            break
+                        else:
+                            raise
 
                 last_updated = chunk_last_updated
         else:
-            # Process without chunking for smaller time ranges
+            # Process without chunking for very small time ranges
+            LOGGER.info(f"Processing {time_diff.days} days of worklog data without chunking")
             while True:
                 last_updated, is_last_page = self._process_worklog_page(last_updated, updated_bookmark)
                 if is_last_page:
@@ -872,9 +882,9 @@ class WorklogsDeleted(Stream):
         now = datetime.datetime.now(pytz.UTC)
         time_diff = now - last_updated
 
-        # Check if we need chunking (more than 1 year of data)
-        if time_diff.days > 365:
-            LOGGER.info(f"Large time range detected for deleted worklogs ({time_diff.days} days). Using chunked requests with 1-year chunks")
+        # Always use chunking to avoid 504 errors
+        if time_diff.days > 30:
+            LOGGER.info(f"Processing {time_diff.days} days of deleted worklog data. Using 30-day chunks.")
 
             for chunk_start, chunk_end, chunk_end_ts in generate_date_chunks(last_updated, now):
                 LOGGER.info(f"Processing deleted worklog chunk: {chunk_start.isoformat()} to {chunk_end.isoformat()}")
@@ -882,9 +892,19 @@ class WorklogsDeleted(Stream):
                 # Process all pages in this chunk
                 since_ts = int(chunk_start.timestamp()) * 1000
                 while since_ts is not None and since_ts < chunk_end_ts:
-                    since_ts = self._process_deleted_page(since_ts, updated_bookmark, until_ts=chunk_end_ts)
+                    try:
+                        since_ts = self._process_deleted_page(since_ts, updated_bookmark, until_ts=chunk_end_ts)
+                    except requests.exceptions.HTTPError as e:
+                        if e.response and e.response.status_code == 504:
+                            # If we get a 504 even with chunking, log it and try to continue
+                            LOGGER.warning(f"Got 504 error for deleted chunk {chunk_start.isoformat()} to {chunk_end.isoformat()}. This chunk may be too large.")
+                            # Move to next chunk to avoid getting stuck
+                            break
+                        else:
+                            raise
         else:
-            # Process without chunking for smaller time ranges
+            # Process without chunking for very small time ranges
+            LOGGER.info(f"Processing {time_diff.days} days of deleted worklog data without chunking")
             since_ts = int(last_updated.timestamp()) * 1000
             while since_ts is not None:
                 since_ts = self._process_deleted_page(since_ts, updated_bookmark)
