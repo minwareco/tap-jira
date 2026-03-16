@@ -14,7 +14,7 @@ setup(name="tap-jira",
       install_requires=[
           "singer-python==5.12.1",
           "atlassian-jwt==3.0.0",
-          "PyJWT>=2.2.0,<2.12.1",
+          "PyJWT>=2.2.0,<2.11.0",
           "requests==2.20.0",
           "psutil>=5.9.0",
           'minware_singer_utils@git+https://{}github.com/minwareco/minware-singer-utils.git@{}'.format(
